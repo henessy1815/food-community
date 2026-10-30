@@ -1,29 +1,26 @@
-import { Icon } from "@/components/foundations/Icon";
+import Image from "next/image";
 import { cn } from "@/lib/cn";
 
 const sizeClass = {
   md: {
-    mark: "size-[32px] rounded-[16px_16px_16px_4px] shadow-[0_3px_8px_var(--color-shadow-brand)]",
-    icon: 20,
-    iconClass: undefined,
+    mark: "size-[32px]",
+    px: 32,
     word: "heading-sm",
   },
   lg: {
-    mark: "size-[56px] rounded-[28px_28px_28px_6px] shadow-[0_6px_16px_var(--color-shadow-brand)]",
-    icon: 24,
-    iconClass: "size-[28px]",
+    mark: "size-[56px] shadow-[0_6px_16px_var(--color-shadow-brand)]",
+    px: 56,
     word: "heading-md",
   },
   xl: {
-    mark: "size-[72px] rounded-[36px_36px_36px_8px] ring-4 ring-text-inverse/15 shadow-[0_12px_32px_var(--color-shadow-brand)]",
-    icon: 24,
-    iconClass: "size-[36px]",
+    mark: "size-[72px] ring-4 ring-text-inverse/15 shadow-[0_12px_32px_var(--color-shadow-brand)]",
+    px: 72,
     word: "display-md",
   },
 } as const;
 
 /**
- * 구로 맛길 로고 — 말풍선 모양 브랜드 마크(자동차) + "구로 맛길" 워드마크("맛길"만 브랜드 컬러)
+ * 구로 맛길 로고 — 원형 스탬프 브랜드 마크(logo.png, 투명 배경) + "구로 맛길" 워드마크("맛길"만 브랜드 컬러)
  * - md: 상단 내비게이션 / lg: 가로 대형 / xl: 로그인 화면(세로 락업 + 영문 레터링)
  * - tone="inverse": 사진·어두운 배경 위 (워드마크 흰색)
  * - 워드마크는 텍스트라 스크린리더에 "구로 맛길"로 읽힌다
@@ -54,12 +51,15 @@ export function Logo({
         className,
       )}
     >
-      <span
-        aria-hidden
-        className={cn("flex shrink-0 items-center justify-center bg-background-brand text-text-on-brand", s.mark)}
-      >
-        <Icon name="car" size={s.icon} className={s.iconClass} />
-      </span>
+      {/* 마크 이미지는 scripts/generate-pwa-assets.mjs 가 logo.png에서 생성 */}
+      <Image
+        src="/images/logo-mark.png"
+        alt=""
+        width={s.px}
+        height={s.px}
+        priority={size === "xl"}
+        className={cn("shrink-0 rounded-full", s.mark)}
+      />
       <span className={cn("flex flex-col gap-[2px]", stacked && "items-center gap-(--spacing-8)")}>
         <Word className={cn(s.word, stacked && "tracking-tight", inverse && "drop-shadow-lg", inverse ? "text-text-inverse" : "text-text-default")}>
           구로 <span className="text-text-brand">맛길</span>

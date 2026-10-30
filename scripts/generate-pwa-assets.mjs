@@ -6,6 +6,7 @@
  * 생성물
  * - src/app/favicon.ico          16·32·48 투명 배경 (PNG 임베드 ICO)
  * - src/app/icon.png             192² 투명 배경 (<link rel="icon">)
+ * - public/images/logo-mark.png  256² 투명 배경 (Logo 컴포넌트 마크)
  * - src/app/apple-icon.png       180² 크림 배경 (iOS는 투명 영역을 검게 칠하므로 불투명)
  * - public/icons/icon-*.png      manifest 아이콘 (any: 투명 · maskable: 크림 배경 + 안전 영역)
  * - public/splash/*.png          iOS apple-touch-startup-image (기기별 세로 해상도)
@@ -218,6 +219,9 @@ const logo = await cutoutLogo();
 const favicons = await Promise.all([16, 32, 48].map(async (size) => ({ size, buffer: await render(logo, size) })));
 await write("src/app/favicon.ico", toIco(favicons));
 await write("src/app/icon.png", await render(logo, 192));
+
+// 앱 내 로고 마크(Logo 컴포넌트) — 투명 배경, 최대 72px × 3x 대응
+await write("public/images/logo-mark.png", await render(logo, 256));
 
 // iOS 홈 화면 아이콘 — 불투명 크림 배경 (iOS가 모서리를 둥글게 자름)
 await write("src/app/apple-icon.png", await render(logo, 180, { scale: 0.84, background: SPLASH_BG }));

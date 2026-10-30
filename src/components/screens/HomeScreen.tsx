@@ -129,8 +129,8 @@ export function HomeScreen({ restaurants, weeklyStats }: { restaurants: Restaura
         </section>
       </Container>
 
-      {/* FAB — 콘텐츠 폭(최대 1280) 우측 하단에 정렬 */}
-      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20">
+      {/* FAB — 콘텐츠 폭(최대 1280) 우측 하단에 정렬 · 설치 띠배너가 있으면 그 위로 */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-(--install-banner-h) z-20">
         <div className="mx-auto flex max-w-[1280px] justify-end px-(--spacing-16) pb-(--spacing-24) md:px-(--spacing-24) lg:px-(--spacing-32)">
           <IconButton
             icon="plus"

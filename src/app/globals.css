@@ -8,6 +8,11 @@
     height: 100%;
   }
 
+  :root {
+    /* PWA 설치 띠배너 높이 — InstallPrompt가 노출 중일 때 갱신 */
+    --install-banner-h: 0px;
+  }
+
   body {
     font-family: var(--font-family);
     color: var(--color-text-default);

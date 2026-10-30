@@ -5,27 +5,38 @@ const sizeClass = {
   md: {
     mark: "size-[32px] rounded-[16px_16px_16px_4px] shadow-[0_3px_8px_var(--color-shadow-brand)]",
     icon: 20,
+    iconClass: undefined,
     word: "heading-sm",
   },
   lg: {
     mark: "size-[56px] rounded-[28px_28px_28px_6px] shadow-[0_6px_16px_var(--color-shadow-brand)]",
     icon: 24,
+    iconClass: "size-[28px]",
     word: "heading-md",
+  },
+  xl: {
+    mark: "size-[72px] rounded-[36px_36px_36px_8px] ring-4 ring-text-inverse/15 shadow-[0_12px_32px_var(--color-shadow-brand)]",
+    icon: 24,
+    iconClass: "size-[36px]",
+    word: "display-md",
   },
 } as const;
 
 /**
  * 구로 맛길 로고 — 말풍선 모양 브랜드 마크(자동차) + "구로 맛길" 워드마크("맛길"만 브랜드 컬러)
- * - md: 상단 내비게이션 / lg: 로그인 화면
+ * - md: 상단 내비게이션 / lg: 가로 대형 / xl: 로그인 화면(세로 락업 + 영문 레터링)
+ * - tone="inverse": 사진·어두운 배경 위 (워드마크 흰색)
  * - 워드마크는 텍스트라 스크린리더에 "구로 맛길"로 읽힌다
  */
 export function Logo({
   size = "md",
+  tone = "default",
   tagline,
   as: Word = "span",
   className,
 }: {
   size?: keyof typeof sizeClass;
+  tone?: "default" | "inverse";
   /** 워드마크 아래 보조 문구 (주말 맛집 드라이브) */
   tagline?: string;
   /** 워드마크 요소 — 페이지 제목이면 h1 */
@@ -33,19 +44,42 @@ export function Logo({
   className?: string;
 }) {
   const s = sizeClass[size];
+  const stacked = size === "xl";
+  const inverse = tone === "inverse";
   return (
-    <span className={cn("inline-flex items-center", size === "lg" ? "gap-(--spacing-12)" : "gap-(--spacing-8)", className)}>
+    <span
+      className={cn(
+        "inline-flex items-center",
+        stacked ? "flex-col gap-(--spacing-20)" : size === "lg" ? "gap-(--spacing-12)" : "gap-(--spacing-8)",
+        className,
+      )}
+    >
       <span
         aria-hidden
         className={cn("flex shrink-0 items-center justify-center bg-background-brand text-text-on-brand", s.mark)}
       >
-        <Icon name="car" size={s.icon} className={size === "lg" ? "size-[28px]" : undefined} />
+        <Icon name="car" size={s.icon} className={s.iconClass} />
       </span>
-      <span className="flex flex-col gap-[2px]">
-        <Word className={cn(s.word, "text-text-default")}>
+      <span className={cn("flex flex-col gap-[2px]", stacked && "items-center gap-(--spacing-8)")}>
+        <Word className={cn(s.word, stacked && "tracking-tight", inverse && "drop-shadow-lg", inverse ? "text-text-inverse" : "text-text-default")}>
           구로 <span className="text-text-brand">맛길</span>
         </Word>
-        {tagline && <span className="label-md text-text-tertiary">{tagline}</span>}
+        {stacked && (
+          <span
+            aria-hidden
+            className={cn(
+              "flex items-center gap-(--spacing-8) label-md tracking-widest",
+              inverse ? "text-text-inverse/70" : "text-text-tertiary",
+            )}
+          >
+            <span className="h-px w-(--spacing-16) bg-current" />
+            GURO MATGIL
+            <span className="h-px w-(--spacing-16) bg-current" />
+          </span>
+        )}
+        {tagline && (
+          <span className={cn("label-md", inverse ? "text-text-inverse/70" : "text-text-tertiary")}>{tagline}</span>
+        )}
       </span>
     </span>
   );

@@ -3,8 +3,8 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabaseEnv } from "./env";
 
-/** 로그인이 필요한 경로 */
-const PROTECTED = [/^\/mypage(\/|$)/, /^\/restaurants\/new$/, /^\/restaurants\/[^/]+\/edit$/];
+/** 로그인 없이 접근 가능한 경로 — 나머지는 모두 로그인이 필요하다 */
+const PUBLIC = [/^\/login$/, /^\/api\/auth(\/|$)/];
 
 /** 요청마다 Supabase 세션 쿠키를 갱신하고, 로그인 여부로 리다이렉트한다 (src/proxy.ts에서 호출) */
 export async function updateSession(request: NextRequest) {
@@ -32,9 +32,13 @@ export async function updateSession(request: NextRequest) {
   const isAuthenticated = Boolean(data?.claims);
   const { pathname, search } = request.nextUrl;
 
-  if (!isAuthenticated && PROTECTED.some((re) => re.test(pathname))) {
+  if (!isAuthenticated && !PUBLIC.some((re) => re.test(pathname))) {
+    // BFF API는 리다이렉트 대신 401
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "로그인이 필요해요" }, { status: 401 });
+    }
     const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("next", pathname + search);
+    if (pathname !== "/") loginUrl.searchParams.set("next", pathname + search);
     return redirectWithCookies(loginUrl, response);
   }
 

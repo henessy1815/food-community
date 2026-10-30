@@ -9,7 +9,8 @@ const meta = {
   tags: ['ai-generated'],
   parameters: { layout: 'padded' },
   argTypes: {
-    size: { control: 'inline-radio', options: ['md', 'lg'] },
+    size: { control: 'inline-radio', options: ['md', 'lg', 'xl'] },
+    tone: { control: 'inline-radio', options: ['default', 'inverse'] },
   },
   args: { size: 'md' },
 } satisfies Meta<typeof Logo>;
@@ -31,6 +32,24 @@ export const Large: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole('heading', { level: 1, name: '구로 맛길' })).toBeVisible();
     await expect(canvas.getByText('주말 맛집 드라이브')).toBeVisible();
+  },
+};
+
+/** 로그인 화면용 — 세로 락업 + 영문 레터링, 실사 배경 위(inverse) */
+export const Hero: Story = {
+  args: { size: 'xl', tone: 'inverse', as: 'h1' },
+  parameters: { layout: 'fullscreen' },
+  decorators: [
+    (Story) => (
+      <div className="flex min-h-[360px] items-center justify-center bg-background-inverse">
+        <Story />
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole('heading', { level: 1, name: '구로 맛길' })).toBeVisible();
+    await expect(canvas.getByText('GURO MATGIL')).toBeVisible();
   },
 };
 

@@ -1,11 +1,9 @@
 "use client";
 
+import Image from "next/image";
 import { useState } from "react";
-import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Logo } from "@/components/ui/Logo";
-
-const values = ["광고 없는 이웃 추천", "주차 정보", "지도 바로가기"];
 
 export function LoginScreen() {
   const [pending, setPending] = useState(false);
@@ -20,35 +18,37 @@ export function LoginScreen() {
   };
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-[480px] flex-col justify-between px-(--spacing-16) py-(--spacing-32)">
-      <div className="flex flex-1 flex-col justify-center gap-(--spacing-32) pb-(--spacing-32)">
-        <Logo size="lg" as="h1" tagline="주말 맛집 드라이브" />
+    <main className="relative isolate flex min-h-dvh flex-col overflow-hidden bg-background-overlay">
+      {/* 실사 배경 + 위아래 그라데이션 (로고·버튼 가독성) */}
+      <Image src="/images/dakgalbi.jpg" alt="" fill priority sizes="100vw" className="-z-20 object-cover" />
+      <div
+        aria-hidden
+        className="absolute inset-0 -z-10 bg-linear-to-b from-background-overlay/70 via-background-overlay/10 via-45% to-background-overlay/90"
+      />
 
-        <div className="flex flex-col gap-(--spacing-16)">
-          <p className="display-md text-text-default">
-            익숙한 동네를 벗어나
-            <br />
-            주말 한 끼
-            <br />
-            <span className="text-text-brand">드라이브 떠나요</span>
-          </p>
-          <p className="body-lg text-text-secondary">차로 30분 거리, 이웃이 직접 다녀온 맛집을 광고 없이 모았어요.</p>
+      <div className="mx-auto flex w-full max-w-[480px] flex-1 flex-col px-(--spacing-16) pt-[18dvh] pb-(--spacing-32)">
+        <div className="relative flex justify-center">
+          {/* 로고 뒤 은은한 방사형 어둠 — 붉은 배경 위 "맛길" 가독성 */}
+          <div
+            aria-hidden
+            className="absolute top-[62%] left-1/2 -z-10 h-[360px] w-[460px] -translate-1/2 bg-radial from-background-overlay/85 via-background-overlay/50 via-35% to-transparent to-70%"
+          />
+          <Logo size="xl" tone="inverse" as="h1" />
         </div>
 
-        <ul className="flex flex-wrap gap-(--spacing-8)">
-          {values.map((v) => (
-            <li key={v}>
-              <Badge size="lg">{v}</Badge>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="flex flex-col items-center gap-(--spacing-12)">
-        <Button variant="secondary" size="lg" fullWidth loading={pending} onClick={signInWithGoogle}>
-          Google로 시작하기
-        </Button>
-        <p className="text-center label-md text-text-tertiary">시작하면 이용약관과 개인정보처리방침에 동의한 것으로 봐요</p>
+        <div className="mt-auto flex flex-col items-center gap-(--spacing-12)">
+          <Button
+            variant="secondary"
+            size="lg"
+            fullWidth
+            loading={pending}
+            onClick={signInWithGoogle}
+            className="border-transparent"
+          >
+            Google로 계속하기
+          </Button>
+          <p className="label-md text-text-inverse/70">이용약관 | 개인정보처리방침</p>
+        </div>
       </div>
     </main>
   );

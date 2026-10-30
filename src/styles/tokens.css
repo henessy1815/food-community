@@ -1,0 +1,172 @@
+/*
+ * Design Tokens — design.pen Variables 1:1 핸드오프
+ * 토큰 이름은 디자인 파일 변수명과 동일하게 유지 (`$color-brand-500` → `--color-brand-500`)
+ */
+
+/* ───────────── Color · Primitive ─────────────
+ * Tailwind 기본 팔레트를 비우고 디자인 토큰만 노출
+ * 예) bg-brand-500, text-neutral-600 */
+@theme static {
+  --color-*: initial;
+
+  --color-brand-50: #fff1ec;
+  --color-brand-100: #ffe7e2;
+  --color-brand-200: #fecec4;
+  --color-brand-300: #feac9b;
+  --color-brand-400: #fe8167;
+  --color-brand-500: #ff5a36;
+  --color-brand-600: #e8431f;
+  --color-brand-700: #b22e01;
+  --color-brand-800: #892402;
+  --color-brand-900: #671b01;
+  --color-brand-950: #400e00;
+
+  --color-neutral-50: #ffffff;
+  --color-neutral-100: #f5f5f3;
+  --color-neutral-200: #ececea;
+  --color-neutral-300: #dadad7;
+  --color-neutral-400: #a6a6a6;
+  --color-neutral-500: #878785;
+  --color-neutral-600: #6b6b6b;
+  --color-neutral-700: #4f4f4e;
+  --color-neutral-800: #333333;
+  --color-neutral-900: #1f1f1f;
+  --color-neutral-950: #191919;
+
+  --color-amber-50: #fcf6eb;
+  --color-amber-100: #faebd2;
+  --color-amber-200: #f5d6a8;
+  --color-amber-300: #efba6e;
+  --color-amber-400: #e29a2b;
+  --color-amber-500: #ca8106;
+  --color-amber-600: #ad6a00;
+  --color-amber-700: #8f5504;
+  --color-amber-800: #703f03;
+  --color-amber-900: #562d01;
+  --color-amber-950: #361900;
+
+  --color-green-50: #f1f9f3;
+  --color-green-100: #dff3e5;
+  --color-green-200: #bfe6cc;
+  --color-green-300: #95d5ae;
+  --color-green-400: #68c08f;
+  --color-green-500: #2e9e6a;
+  --color-green-600: #189260;
+  --color-green-700: #03784e;
+  --color-green-800: #015c3c;
+  --color-green-900: #02452d;
+  --color-green-950: #01291a;
+
+  --color-blue-50: #f2f7fe;
+  --color-blue-100: #e2eeff;
+  --color-blue-200: #c5ddfe;
+  --color-blue-300: #a0c6fe;
+  --color-blue-400: #74acfe;
+  --color-blue-500: #4891fe;
+  --color-blue-600: #2d77e6;
+  --color-blue-700: #1e5fc3;
+  --color-blue-800: #154899;
+  --color-blue-900: #113673;
+  --color-blue-950: #051f4b;
+
+  --color-red-50: #fff8f8;
+  --color-red-100: #fdecec;
+  --color-red-200: #fecdc8;
+  --color-red-300: #ffaba2;
+  --color-red-400: #ff7f74;
+  --color-red-500: #fa4e47;
+  --color-red-600: #e53935;
+  --color-red-700: #b91a19;
+  --color-red-800: #920e0d;
+  --color-red-900: #6d0d09;
+  --color-red-950: #460101;
+
+  --color-transparent: transparent;
+  --color-current: currentColor;
+}
+
+/* ───────────── Color · Semantic ─────────────
+ * hex 직접 입력 금지 — 프리미티브 토큰만 참조
+ * 예) text-text-default, bg-background-brand, border-border-default */
+@theme static {
+  --color-text-default: var(--color-neutral-950);
+  --color-text-body: var(--color-neutral-800);
+  --color-text-secondary: var(--color-neutral-600);
+  --color-text-tertiary: var(--color-neutral-400);
+  --color-text-placeholder: var(--color-neutral-400);
+  --color-text-disabled: var(--color-neutral-400);
+  --color-text-inverse: var(--color-neutral-50);
+  --color-text-brand: var(--color-brand-500);
+  --color-text-brand-strong: var(--color-brand-600);
+  --color-text-on-brand: var(--color-neutral-50);
+  --color-text-error: var(--color-red-600);
+  --color-text-error-strong: var(--color-red-700);
+  --color-text-success: var(--color-green-500);
+  --color-text-warning: var(--color-amber-600);
+  --color-text-info: var(--color-blue-600);
+
+  --color-background-default: var(--color-neutral-50);
+  --color-background-subtle: var(--color-neutral-100);
+  --color-background-muted: var(--color-neutral-200);
+  --color-background-strong: var(--color-neutral-300);
+  --color-background-disabled: var(--color-neutral-200);
+  --color-background-inverse: var(--color-neutral-900);
+  --color-background-overlay: var(--color-neutral-950);
+  --color-background-brand: var(--color-brand-500);
+  --color-background-brand-pressed: var(--color-brand-600);
+  --color-background-brand-subtle: var(--color-brand-50);
+  --color-background-brand-muted: var(--color-brand-100);
+  --color-background-error: var(--color-red-600);
+  --color-background-error-subtle: var(--color-red-50);
+  --color-background-error-muted: var(--color-red-100);
+  --color-background-success: var(--color-green-500);
+  --color-background-success-subtle: var(--color-green-50);
+  --color-background-warning: var(--color-amber-500);
+  --color-background-warning-subtle: var(--color-amber-50);
+  --color-background-info: var(--color-blue-600);
+  --color-background-info-subtle: var(--color-blue-50);
+
+  --color-border-default: var(--color-neutral-200);
+  --color-border-strong: var(--color-neutral-300);
+  --color-border-disabled: var(--color-neutral-200);
+  --color-border-brand: var(--color-brand-500);
+  --color-border-error: var(--color-red-600);
+  --color-border-success: var(--color-green-500);
+  --color-border-warning: var(--color-amber-600);
+  --color-border-info: var(--color-blue-600);
+
+  --color-shadow-brand: var(--color-brand-300);
+}
+
+/* ───────────── Typography · Primitive ─────────────
+ * --font-family 값은 layout의 next/font/local 변수(--font-pretendard)를 참조 */
+:root {
+  --font-family: var(--font-pretendard), "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+
+  --font-size-900: 40px;
+  --font-size-800: 36px;
+  --font-size-700: 32px;
+  --font-size-600: 28px;
+  --font-size-500: 24px;
+  --font-size-400: 20px;
+  --font-size-300: 16px;
+  --font-size-200: 14px;
+  --font-size-100: 12px;
+
+  --font-weight-bold: 700;
+  --font-weight-semibold: 600;
+  --font-weight-regular: 400;
+
+  --font-line-height-tight: 1.2;
+  --font-line-height-normal: 1.4;
+
+  --font-letter-spacing: -0.02em;
+
+  /* ───────────── Spacing ───────────── */
+  --spacing-8: 8px;
+  --spacing-12: 12px;
+  --spacing-16: 16px;
+  --spacing-20: 20px;
+  --spacing-24: 24px;
+  --spacing-32: 32px;
+}

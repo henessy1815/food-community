@@ -1,0 +1,85 @@
+/*
+ * Typography — design.pen "Design System / Typography" 텍스트 컴포넌트 1:1 핸드오프
+ * 사용: className="display-lg" 또는 <Text variant="display-lg" />
+ * 공통 자간 -2%
+ */
+
+@utility display-lg {
+  font-family: var(--font-family);
+  font-size: var(--font-size-800);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--font-line-height-tight);
+  letter-spacing: var(--font-letter-spacing);
+}
+
+@utility display-md {
+  font-family: var(--font-family);
+  font-size: var(--font-size-700);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--font-line-height-tight);
+  letter-spacing: var(--font-letter-spacing);
+}
+
+@utility display-sm {
+  font-family: var(--font-family);
+  font-size: var(--font-size-600);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--font-line-height-tight);
+  letter-spacing: var(--font-letter-spacing);
+}
+
+@utility heading-lg {
+  font-family: var(--font-family);
+  font-size: var(--font-size-500);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--font-line-height-tight);
+  letter-spacing: var(--font-letter-spacing);
+}
+
+@utility heading-md {
+  font-family: var(--font-family);
+  font-size: var(--font-size-400);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--font-line-height-tight);
+  letter-spacing: var(--font-letter-spacing);
+}
+
+@utility heading-sm {
+  font-family: var(--font-family);
+  font-size: var(--font-size-300);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--font-line-height-tight);
+  letter-spacing: var(--font-letter-spacing);
+}
+
+@utility body-lg {
+  font-family: var(--font-family);
+  font-size: var(--font-size-300);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--font-line-height-normal);
+  letter-spacing: var(--font-letter-spacing);
+}
+
+@utility body-md {
+  font-family: var(--font-family);
+  font-size: var(--font-size-200);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--font-line-height-normal);
+  letter-spacing: var(--font-letter-spacing);
+}
+
+@utility label-lg {
+  font-family: var(--font-family);
+  font-size: var(--font-size-200);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--font-line-height-normal);
+  letter-spacing: var(--font-letter-spacing);
+}
+
+@utility label-md {
+  font-family: var(--font-family);
+  font-size: var(--font-size-100);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--font-line-height-normal);
+  letter-spacing: var(--font-letter-spacing);
+}

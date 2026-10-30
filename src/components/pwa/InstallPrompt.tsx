@@ -3,7 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { InstallBanner, type InstallPlatform } from "./InstallBanner";
-import { IosInstallGuide } from "./IosInstallGuide";
+import { InstallGuide } from "./InstallGuide";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -17,6 +17,7 @@ const DISMISS_DAYS = 7;
 
 // beforeinstallprompt는 하이드레이션 전에 올 수 있어 모듈 로드 시점부터 잡아 둔다
 let deferredPrompt: BeforeInstallPromptEvent | null = null;
+let installed = false;
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((listener) => listener());
 
@@ -28,6 +29,7 @@ if (typeof window !== "undefined") {
   });
   window.addEventListener("appinstalled", () => {
     deferredPrompt = null;
+    installed = true;
     emit();
   });
 }
@@ -40,6 +42,8 @@ const noopSubscribe = () => () => {};
 
 function detectPlatform(): InstallPlatform | null {
   const ua = navigator.userAgent;
+  // 카카오톡 인앱 브라우저는 설치(PWA)를 지원하지 않아 외부 브라우저로 넘겨야 한다 (UA에 Android/iPhone도 포함되므로 먼저 판별)
+  if (/kakaotalk/i.test(ua)) return "kakao";
   if (/android/i.test(ua)) return "android";
   // iPadOS 13+는 데스크톱 Safari UA를 쓰므로 터치 지원으로 구분
   if (/iphone|ipad|ipod/i.test(ua) || (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1)) return "ios";
@@ -62,6 +66,7 @@ function isRecentlyDismissed() {
 export function InstallPrompt() {
   const pathname = usePathname();
   const prompt = useSyncExternalStore(subscribePrompt, () => deferredPrompt, () => null);
+  const justInstalled = useSyncExternalStore(subscribePrompt, () => installed, () => false);
   const platform = useSyncExternalStore(noopSubscribe, detectPlatform, () => null);
   const eligible = useSyncExternalStore(
     noopSubscribe,
@@ -76,7 +81,8 @@ export function InstallPrompt() {
     BANNER_PATHS.has(pathname) &&
     eligible &&
     !dismissed &&
-    (platform === "ios" || (platform === "android" && prompt !== null));
+    !justInstalled &&
+    platform !== null;
 
   // 배너 높이만큼 문서 하단에 여백을 두고, 고정 요소(FAB)가 피할 수 있게 CSS 변수로 공유
   useEffect(() => {
@@ -99,11 +105,16 @@ export function InstallPrompt() {
   if (!platform) return null;
 
   const install = async () => {
-    if (platform === "ios") {
+    if (platform === "kakao") {
+      // 기기 기본 브라우저로 현재 페이지를 연다 (안드로이드 · iOS 공통 카카오톡 스킴)
+      location.href = `kakaotalk://web/openExternal?url=${encodeURIComponent(location.href)}`;
+      return;
+    }
+    // iOS · 프롬프트를 주지 않는 안드로이드 브라우저(삼성 인터넷 등)는 수동 설치 가이드
+    if (platform === "ios" || !prompt) {
       setGuideOpen(true);
       return;
     }
-    if (!prompt) return;
     deferredPrompt = null; // prompt()는 이벤트당 한 번만 호출 가능
     await prompt.prompt();
     const { outcome } = await prompt.userChoice;
@@ -123,7 +134,9 @@ export function InstallPrompt() {
           <InstallBanner platform={platform} onInstall={install} onDismiss={dismiss} />
         </div>
       )}
-      {platform === "ios" && <IosInstallGuide open={guideOpen} onClose={() => setGuideOpen(false)} />}
+      {platform !== "kakao" && (
+        <InstallGuide platform={platform} open={guideOpen} onClose={() => setGuideOpen(false)} />
+      )}
     </>
   );
 }

@@ -2,14 +2,14 @@ import type { Meta, StoryObj } from '@storybook/nextjs-vite';
 import { useState } from 'react';
 import { expect, fn, waitFor, within } from 'storybook/test';
 import { InstallBanner } from '@/components/pwa/InstallBanner';
-import { IosInstallGuide } from '@/components/pwa/IosInstallGuide';
+import { InstallGuide } from '@/components/pwa/InstallGuide';
 
 const meta = {
   title: 'Components/Feedback/InstallBanner',
   component: InstallBanner,
   tags: ['ai-generated'],
   parameters: { layout: 'fullscreen' },
-  argTypes: { platform: { control: 'inline-radio', options: ['android', 'ios'] } },
+  argTypes: { platform: { control: 'inline-radio', options: ['android', 'ios', 'kakao'] } },
   args: { platform: 'android', onInstall: fn(), onDismiss: fn() },
 } satisfies Meta<typeof InstallBanner>;
 
@@ -42,7 +42,7 @@ export const IOS: Story = {
             setOpen(true);
           }}
         />
-        <IosInstallGuide open={open} onClose={() => setOpen(false)} />
+        <InstallGuide platform="ios" open={open} onClose={() => setOpen(false)} />
       </>
     );
   },
@@ -56,12 +56,32 @@ export const IOS: Story = {
   },
 };
 
+/** 카카오톡 인앱 브라우저 — 설치 불가라 외부 브라우저로 열기 유도 */
+export const Kakao: Story = {
+  args: { platform: 'kakao' },
+  play: async ({ canvas, args, userEvent }) => {
+    await userEvent.click(canvas.getByRole('button', { name: /브라우저로 열기/ }));
+    await expect(args.onInstall).toHaveBeenCalled();
+  },
+};
+
 /** iOS 가이드 바텀시트 단독 */
 export const IOSGuide: Story = {
-  render: () => <IosInstallGuide open onClose={fn()} />,
+  render: () => <InstallGuide platform="ios" open onClose={fn()} />,
   play: async ({ canvasElement }) => {
     const body = within(canvasElement.ownerDocument.body);
     const sheet = await body.findByRole('dialog', { name: '홈 화면에 추가하는 방법' });
     await expect(within(sheet).getByText(/홈 화면에 추가’ 선택/)).toBeVisible();
+  },
+};
+
+/** 안드로이드 가이드 — 설치 프롬프트를 주지 않는 브라우저(삼성 인터넷 등)용 */
+export const AndroidGuide: Story = {
+  render: () => <InstallGuide platform="android" open onClose={fn()} />,
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body);
+    const sheet = await body.findByRole('dialog', { name: '홈 화면에 추가하는 방법' });
+    await expect(within(sheet).getAllByRole('listitem')).toHaveLength(3);
+    await expect(within(sheet).getByText(/현재 페이지 추가/)).toBeVisible();
   },
 };

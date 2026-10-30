@@ -1,12 +1,19 @@
 import Image from "next/image";
 import { Icon } from "@/components/foundations/Icon";
 
-export type InstallPlatform = "android" | "ios";
+export type InstallPlatform = "android" | "ios" | "kakao";
+
+const copy: Record<InstallPlatform, { description: string; action: string }> = {
+  android: { description: "홈 화면에서 바로 맛집을 찾아보세요", action: "설치" },
+  ios: { description: "홈 화면에서 바로 맛집을 찾아보세요", action: "설치 방법" },
+  kakao: { description: "브라우저에서 열면 앱으로 설치할 수 있어요", action: "브라우저로 열기" },
+};
 
 /**
  * 하단 고정 앱 설치 유도 띠배너 — 다른 UI 컴포넌트를 재사용하지 않는 전용 마크업
- * - android: 배너 탭 → 브라우저 설치 프롬프트
+ * - android: 배너 탭 → 브라우저 설치 프롬프트 (프롬프트가 없으면 홈 화면 추가 가이드)
  * - ios: 배너 탭 → 홈 화면 추가 가이드(바텀시트)
+ * - kakao: 카카오톡 인앱 브라우저 — 배너 탭 → 외부 브라우저로 열기
  */
 export function InstallBanner({
   platform,
@@ -37,10 +44,10 @@ export function InstallBanner({
           />
           <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
             <span className="truncate label-lg">구로 맛길 앱 설치하기</span>
-            <span className="truncate label-md text-text-inverse/70">홈 화면에서 바로 맛집을 찾아보세요</span>
+            <span className="truncate label-md text-text-inverse/70">{copy[platform].description}</span>
           </span>
           <span className="shrink-0 rounded-full bg-background-brand px-(--spacing-12) py-[6px] label-md text-text-on-brand">
-            {platform === "android" ? "설치" : "설치 방법"}
+            {copy[platform].action}
           </span>
         </button>
         <button

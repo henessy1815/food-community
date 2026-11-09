@@ -12,6 +12,7 @@ export * from "./IconButton";
 export * from "./Menu";
 export * from "./MenuItem";
 export * from "./Modal";
+export * from "./PageBadge";
 export * from "./Radio";
 export * from "./Select";
 export * from "./SelectItem";

@@ -4,24 +4,21 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Container } from "@/components/layout/Container";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { ProductBanner } from "@/components/product/ProductBanner";
 import { RestaurantGrid } from "@/components/restaurant/RestaurantGrid";
-import { Badge } from "@/components/ui/Badge";
 import { Empty } from "@/components/ui/Empty";
 import { IconButton } from "@/components/ui/IconButton";
 import { Logo } from "@/components/ui/Logo";
 import { Spinner } from "@/components/ui/Spinner";
 import { TextField } from "@/components/ui/TextField";
+import { cn } from "@/lib/cn";
+import type { Product } from "@/lib/products";
 import { listMeta, type Restaurant } from "@/lib/restaurants";
 
 const PAGE_SIZE = 4;
 
-export interface WeeklyStats {
-  period: string;
-  count: number;
-}
-
-/** restaurants: 최신순 */
-export function HomeScreen({ restaurants, weeklyStats }: { restaurants: Restaurant[]; weeklyStats: WeeklyStats }) {
+/** restaurants: 최신순 · products: 배너에 노출할 강연·모임 (판매 중 → 마감 순) */
+export function HomeScreen({ restaurants, products }: { restaurants: Restaurant[]; products: Product[] }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [visible, setVisible] = useState(PAGE_SIZE);
@@ -55,50 +52,46 @@ export function HomeScreen({ restaurants, weeklyStats }: { restaurants: Restaura
         as="main"
         className="flex flex-1 flex-col gap-(--spacing-24) pt-(--spacing-12) pb-(--spacing-32)"
       >
-        {/* Hero — 태블릿 이상에서 인사말·검색 | 주간 배너 2단 */}
-        <section className="grid gap-(--spacing-24) md:grid-cols-2 md:items-end md:gap-(--spacing-32)">
-          <div className="flex flex-col gap-(--spacing-24)">
-            <div className="flex flex-col gap-[2px]">
-              <p className="heading-lg text-text-default">이번 주말엔</p>
-              <p className="heading-lg text-text-default">
-                <span className="text-text-brand">새로운 맛집</span>으로 가볼까요?
-              </p>
-              <p className="body-md text-text-secondary">구로 이웃이 차 타고 직접 다녀온 곳만 모았어요</p>
-            </div>
-            <form
-              role="search"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const q = query.trim();
-                if (q) router.push(`/search?q=${encodeURIComponent(q)}`);
-              }}
-            >
-              <TextField
-                size="lg"
-                iconLeft="search"
-                type="text"
-                enterKeyHint="search"
-                aria-label="맛집 검색"
-                placeholder="맛집 이름, 내용으로 검색"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            </form>
+        {/* Hero — 모바일: 인사말 · 배너(화면 폭 꽉 차게) · 검색 / 태블릿 이상: 인사말·검색 | 배너 2단 */}
+        <section
+          className={cn(
+            "grid grid-cols-1 gap-(--spacing-24) md:items-center md:gap-x-(--spacing-32)",
+            products.length > 0 && "md:grid-cols-2",
+          )}
+        >
+          <div className="flex flex-col gap-[2px] md:col-start-1 md:row-start-1">
+            <p className="heading-lg text-text-default">이번 주말엔</p>
+            <p className="heading-lg text-text-default">
+              <span className="text-text-brand">새로운 맛집</span>으로 가볼까요?
+            </p>
+            <p className="body-md text-text-secondary">구로 이웃이 차 타고 직접 다녀온 곳만 모았어요</p>
           </div>
 
-          <section
-            aria-label="이번 주 새로 올라온 곳"
-            className="flex flex-col gap-(--spacing-12) rounded-[18px] border border-border-default bg-background-default p-(--spacing-16)"
+          <ProductBanner
+            products={products}
+            className="-mx-(--spacing-16) md:col-start-2 md:row-span-2 md:row-start-1 md:mx-0"
+          />
+
+          <form
+            role="search"
+            className="md:col-start-1 md:row-start-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const q = query.trim();
+              if (q) router.push(`/search?q=${encodeURIComponent(q)}`);
+            }}
           >
-            <div className="flex items-center justify-between">
-              <Badge>이번 주 새로 올라온 곳</Badge>
-              <span className="label-md text-text-secondary">{weeklyStats.period}</span>
-            </div>
-            <p className="flex items-end gap-[2px] text-text-brand">
-              <span className="display-lg">{weeklyStats.count}</span>
-              <span className="heading-sm">곳</span>
-            </p>
-          </section>
+            <TextField
+              size="lg"
+              iconLeft="search"
+              type="text"
+              enterKeyHint="search"
+              aria-label="맛집 검색"
+              placeholder="맛집 이름, 내용으로 검색"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </form>
         </section>
 
         <section aria-labelledby="latest-title" className="flex flex-col gap-(--spacing-12)">

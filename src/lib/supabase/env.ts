@@ -20,3 +20,12 @@ export function getStorageUrl() {
   }
   return url.replace(/\/$/, "");
 }
+
+/** Supabase secret 키 (service role) — 결제 원장 기록(record_payment_*) 전용. 절대 클라이언트에 노출하지 않는다 */
+export function getSupabaseSecretKey() {
+  const key = process.env.SUPABASE_SECRET_KEY;
+  if (!key) {
+    throw new Error("SUPABASE_SECRET_KEY 환경변수가 필요합니다 (.env.local)");
+  }
+  return key;
+}

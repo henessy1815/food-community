@@ -44,4 +44,12 @@ export const Playground: Story = {
 };
 
 export const Success: Story = { args: { type: 'success', children: labels.success } };
+
+export const Warning: Story = {
+  args: { type: 'warning', children: labels.warning },
+  play: async ({ canvas }) => {
+    const badge = canvas.getByText(labels.warning);
+    await expect(badge).toHaveClass('bg-background-warning-subtle', 'text-text-warning');
+  },
+};
 export const Large: Story = { args: { size: 'lg' } };

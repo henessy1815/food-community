@@ -88,22 +88,6 @@ export async function getPlace(id: string) {
   return restaurant;
 }
 
-/** 최근 7일간 올라온 맛집 수 — 메인 배너 */
-export async function getWeeklyStats() {
-  await connection();
-  const supabase = await createClient();
-  const end = new Date();
-  const start = new Date(end.getTime() - 7 * DAY);
-
-  const { count } = await supabase
-    .from("place")
-    .select("id", { count: "exact", head: true })
-    .is("deleted_at", null)
-    .gte("created_at", start.toISOString());
-
-  return { period: `${monthDay(start)} – ${monthDay(end)}`, count: count ?? 0 };
-}
-
 export function placeImageUrl(path: string) {
   return `${getStorageUrl()}/${PLACE_IMAGE_BUCKET}/${path}`;
 }
@@ -228,16 +212,11 @@ export async function removePlaceImageFiles(supabase: Supabase, paths: string[])
 
 /* ───────────── 날짜 표기 (KST) ───────────── */
 
-const DAY = 24 * 60 * 60 * 1000;
 const DATE = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" });
 const TIME = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", hour: "numeric", minute: "2-digit" });
 
 function dateLabel(date: Date) {
   return DATE.format(date).replaceAll("-", ".");
-}
-
-function monthDay(date: Date) {
-  return dateLabel(date).slice(5);
 }
 
 function relativeTime(date: Date, now: number) {

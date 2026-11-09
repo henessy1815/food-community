@@ -16,7 +16,7 @@ const typeClass: Record<BadgeType, string> = {
   success: "bg-background-success text-text-inverse",
   error: "bg-background-error text-text-inverse",
   info: "bg-background-info text-text-inverse",
-  warning: "bg-background-warning text-text-default",
+  warning: "bg-background-warning-subtle text-text-warning",
 };
 
 export function Badge({ type = "neutral", size = "md", children, className }: BadgeProps) {

@@ -17,7 +17,9 @@ Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS v4 · Storyboo
 - `src/components/ui` — UI 컴포넌트
 - `src/stories` — 스토리
 - `src/lib/supabase` — 서버 전용 Supabase 클라이언트(`server.ts`) · 세션 갱신(`proxy.ts`)
-- `src/app/api` — BFF Route Handler (`auth/login` · `auth/callback` · `auth/logout` · `profile`)
+- `src/app/api` — BFF Route Handler (`auth/login` · `auth/callback` · `auth/logout` · `profile` · `products` · `products/[id]` · `payments/prepare` · `payments/complete` · `payments/[id]/cancel`)
+- `src/lib/shop.ts` — 상품(product 테이블 · product-image 버킷) 조회 · 결제 준비 · 검증 · 취소 · 주문 조립
+- `src/lib/portone.ts` — 포트원 V2 서버 SDK 래퍼 (결제 조회 · 취소)
 - `src/lib/auth.ts` — `getCurrentUser()` 로그인 사용자 + profile 조회 (Suspense 경계 안에서 호출)
 - `src/proxy.ts` — 요청마다 Supabase 세션 쿠키 갱신 · 보호 경로 비로그인 시 `/login?next=` 리다이렉트
 
@@ -34,6 +36,13 @@ Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS v4 · Storyboo
 - Supabase 클라이언트 생성은 서버 전용 모듈(`src/lib/supabase/`)에 두고 `import 'server-only'`로 클라이언트 번들 유입을 막는다.
 - 키·URL은 `NEXT_PUBLIC_` 접두사 없이 서버 환경변수로만 관리한다. service role 키는 절대 클라이언트에 노출하지 않는다.
 - 소셜 로그인(OAuth) 콜백·세션 처리도 BFF Route Handler에서 처리한다(쿠키 기반 세션).
+
+## 결제: `.claude/rules/payment.md`가 SSOT
+
+- 결제 · 취소 · 환불 · 웹훅 등 결제 관련 작업 전에 `.claude/rules/payment.md`를 먼저 읽고 그대로 따른다. 규칙을 바꿀 땐 문서를 먼저 고친다.
+- 포트원 API · SDK는 PortOne MCP(`portone-mcp-server`)로 문서 · 스키마를 확인하고 쓴다.
+- `payment` · `payment_snapshot`은 append-only — INSERT만, 기록은 `record_payment_*` 함수(service role)로만.
+- 환경변수 목록은 `.env.example`이 기준이다.
 
 ## Responsive
 

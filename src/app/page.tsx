@@ -1,7 +1,8 @@
 import { Suspense } from "react";
 import { HomeScreen } from "@/components/screens/HomeScreen";
 import { Spinner } from "@/components/ui/Spinner";
-import { getWeeklyStats, listPlaces } from "@/lib/places";
+import { listPlaces } from "@/lib/places";
+import { listBannerProducts } from "@/lib/shop";
 
 export default function Home() {
   return (
@@ -18,6 +19,6 @@ export default function Home() {
 }
 
 async function HomeContent() {
-  const [restaurants, weeklyStats] = await Promise.all([listPlaces(), getWeeklyStats()]);
-  return <HomeScreen restaurants={restaurants} weeklyStats={weeklyStats} />;
+  const [restaurants, products] = await Promise.all([listPlaces(), listBannerProducts()]);
+  return <HomeScreen restaurants={restaurants} products={products} />;
 }

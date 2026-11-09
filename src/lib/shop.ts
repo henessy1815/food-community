@@ -1,0 +1,509 @@
+import "server-only";
+import { connection } from "next/server";
+import {
+  REFUND_DAYS,
+  orderNumber,
+  type Order,
+  type OrderErrorBody,
+  type OrderStatus,
+  type PaymentRequestParams,
+  type Product,
+} from "@/lib/products";
+import {
+  cancelPortonePayment,
+  getPortoneConfig,
+  getPortonePayment,
+  paymentMethodLabel,
+  type PortonePayment,
+} from "@/lib/portone";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { getStorageUrl } from "@/lib/supabase/env";
+import { createClient } from "@/lib/supabase/server";
+
+/*
+ * 강연·모임 상품 · 결제 (BFF 전용) — 결제 규칙 SSOT: .claude/rules/payment.md
+ * - 상품: product 테이블(공개 상품만, RLS product_select_public). 이미지는 product-image 버킷 경로만 DB에 둔다.
+ * - 결제: 포트원 V2 결제창 → 서버 검증(결제 조회 API) → payment(append-only 원장) + payment_snapshot 기록.
+ * - 원장 조회는 사용자 세션(RLS: 본인 행), 원장 기록은 service role로 record_payment_* 함수만 호출한다.
+ */
+
+export const PRODUCT_IMAGE_BUCKET = "product-image";
+
+/** product.status — 이 값인 상품만 노출·판매 (RLS product_select_public과 같은 조건) */
+const PUBLIC_STATUS = "Public";
+const CURRENCY = "KRW";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PRODUCT_SELECT =
+  "id, created_at, name, description, event_at, addresss, capacity, price, image_path_main, image_path_detail, status";
+const PAYMENT_SELECT =
+  "id, created_at, transaction_key, type, amount, product_id, payment_snapshot(snapshot_payment, snapshot_product)";
+
+type Supabase = Awaited<ReturnType<typeof createClient>>;
+
+/** product 행 — 결제 스냅샷(snapshot_product)에도 이 모양 그대로 저장한다 */
+interface ProductRow {
+  id: string;
+  created_at: string;
+  name: string;
+  description: string;
+  event_at: string;
+  /** 컬럼명 오타(s 3개) 그대로 */
+  addresss: string;
+  capacity: number;
+  /** numeric — PostgREST가 숫자 또는 문자열로 내려준다 */
+  price: number | string;
+  image_path_main: string;
+  image_path_detail: string;
+  status: string;
+}
+
+type PaymentType = "PAID" | "CANCEL_REQUESTED" | "CANCELLED";
+
+interface PaymentRow {
+  id: string;
+  created_at: string;
+  transaction_key: string;
+  type: PaymentType;
+  amount: number | string;
+  product_id: string;
+  payment_snapshot: { snapshot_payment: PortonePayment; snapshot_product: ProductRow } | null;
+}
+
+type Result<T> = { ok: true; value: T } | { ok: false; status: number; error: OrderErrorBody };
+
+const fail = (status: number, error: OrderErrorBody): { ok: false; status: number; error: OrderErrorBody } => ({
+  ok: false,
+  status,
+  error,
+});
+
+export function productImageUrl(path: string) {
+  return `${getStorageUrl()}/${PRODUCT_IMAGE_BUCKET}/${path.replace(/^\//, "")}`;
+}
+
+/** 행사 n일 전 23:59:59 (KST) */
+function refundDeadline(startsAt: string, days = REFUND_DAYS) {
+  const date = new Date(startsAt);
+  date.setUTCDate(date.getUTCDate() - days);
+  const ymd = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(date);
+  return `${ymd}T23:59:59+09:00`;
+}
+
+/* ---------- 상품 · 원장 읽기 ---------- */
+
+/** 공개 상품 — ids를 주면 그 상품만 (형식이 잘못된 id는 무시) · 행사 일시순 */
+async function fetchProductRows(supabase: Supabase, ids?: string[]): Promise<ProductRow[]> {
+  const validIds = ids?.filter((id) => UUID.test(id));
+  if (validIds && validIds.length === 0) return [];
+
+  let request = supabase
+    .from("product")
+    .select(PRODUCT_SELECT)
+    .eq("status", PUBLIC_STATUS)
+    .order("event_at", { ascending: true });
+  if (validIds) request = request.in("id", validIds);
+
+  const { data, error } = await request;
+  if (error) throw new Error(`상품을 불러오지 못했어요: ${error.message}`);
+  return data as ProductRow[];
+}
+
+async function fetchProductRow(supabase: Supabase, id: string) {
+  const [row] = await fetchProductRows(supabase, [id]);
+  return row ?? null;
+}
+
+/** 참여 인원 — 취소되지 않은 PAID 건수 (product_seat_counts) */
+async function fetchSeats(supabase: Supabase, productIds: string[]): Promise<Map<string, number>> {
+  if (productIds.length === 0) return new Map();
+  const { data, error } = await supabase.rpc("product_seat_counts", { product_ids: productIds });
+  if (error) throw new Error(`참여 인원을 불러오지 못했어요: ${error.message}`);
+  return new Map((data as { product_id: string; seats: number }[]).map((r) => [r.product_id, r.seats]));
+}
+
+/** 본인 결제 원장 — transaction_key(paymentId)별로 묶는다 */
+async function fetchMyPayments(supabase: Supabase, userId: string, transactionKey?: string) {
+  let request = supabase
+    .from("payment")
+    .select(PAYMENT_SELECT)
+    .eq("user_id", userId)
+    .order("created_at", { ascending: true });
+  if (transactionKey) request = request.eq("transaction_key", transactionKey);
+
+  const { data, error } = await request;
+  if (error) throw new Error(`결제 내역을 불러오지 못했어요: ${error.message}`);
+
+  const groups = new Map<string, PaymentRow[]>();
+  for (const row of data as unknown as PaymentRow[]) {
+    groups.set(row.transaction_key, [...(groups.get(row.transaction_key) ?? []), row]);
+  }
+  return groups;
+}
+
+/** 결제 1건의 현재 상태 — 같은 transaction_key의 행 중 가장 진행된 이벤트 */
+function settle(events: PaymentRow[]) {
+  const paid = events.find((e) => e.type === "PAID");
+  const requested = events.find((e) => e.type === "CANCEL_REQUESTED");
+  const cancelled = events.find((e) => e.type === "CANCELLED");
+  const status: Exclude<OrderStatus, "failed"> = cancelled ? "refunded" : requested ? "refunding" : "paid";
+  return { paid, requested, cancelled, status };
+}
+
+/** 본인이 결제 완료(취소 전)한 주문 — 상품 id별 */
+function activeOrders(groups: Map<string, PaymentRow[]>) {
+  const map = new Map<string, { id: string; paidAt: string }>();
+  for (const [key, events] of groups) {
+    const { paid, status } = settle(events);
+    if (paid && status === "paid") map.set(paid.product_id, { id: key, paidAt: paidAtOf(paid) });
+  }
+  return map;
+}
+
+function paidAtOf(paid: PaymentRow) {
+  const snapshot = paid.payment_snapshot?.snapshot_payment;
+  return (snapshot && "paidAt" in snapshot && snapshot.paidAt) || paid.created_at;
+}
+
+function toProduct(
+  row: ProductRow,
+  now: number,
+  seatsById: Map<string, number>,
+  myOrders?: Map<string, { id: string; paidAt: string }>,
+): Product {
+  const maxSeats = row.capacity;
+  const seats = Math.min(maxSeats, seatsById.get(row.id) ?? 0);
+  return {
+    id: row.id,
+    title: row.name,
+    description: row.description,
+    bannerImage: { src: productImageUrl(row.image_path_main), alt: `${row.name} 배너` },
+    photos: [{ src: productImageUrl(row.image_path_detail), alt: row.name }],
+    startsAt: row.event_at,
+    address: row.addresss,
+    price: Number(row.price),
+    maxSeats,
+    seats,
+    refundDeadline: refundDeadline(row.event_at),
+    status: now >= Date.parse(row.event_at) ? "ended" : seats >= maxSeats ? "closed" : "on_sale",
+    myOrder: myOrders?.get(row.id) ?? null,
+  };
+}
+
+/** 원장 행 묶음 → 화면 주문. 상품 정보는 결제 시점 스냅샷을 쓴다 (이후 상품이 바뀌거나 비공개여도 그대로) */
+function toOrder(key: string, events: PaymentRow[], now: number, seatsById: Map<string, number>): Order | null {
+  const { paid, requested, cancelled, status } = settle(events);
+  const snapshot = paid?.payment_snapshot;
+  if (!paid || !snapshot) return null;
+
+  const paidAt = paidAtOf(paid);
+  const product = toProduct(
+    snapshot.snapshot_product,
+    now,
+    seatsById,
+    status === "paid" ? new Map([[paid.product_id, { id: key, paidAt }]]) : undefined,
+  );
+  return {
+    id: key,
+    orderNo: orderNumber(key, paidAt),
+    product,
+    amount: Number(paid.amount),
+    method: paymentMethodLabel(snapshot.snapshot_payment),
+    status,
+    paidAt,
+    canceledAt: (requested ?? cancelled)?.created_at,
+    refundedAt: cancelled?.created_at,
+    attended: now >= Date.parse(product.endsAt ?? product.startsAt),
+    cancelable: status === "paid" && now <= Date.parse(product.refundDeadline) && now < Date.parse(product.startsAt),
+  };
+}
+
+async function toOrders(supabase: Supabase, groups: Map<string, PaymentRow[]>, now: number) {
+  const productIds = [...new Set([...groups.values()].flat().map((e) => e.product_id))];
+  const seats = await fetchSeats(supabase, productIds);
+  return [...groups].flatMap(([key, events]) => {
+    const order = toOrder(key, events, now, seats);
+    return order ? [order] : [];
+  });
+}
+
+/* ---------- 조회 ---------- */
+
+/** 상품 목록 — 공개 상품 전체, 행사 일시순 */
+export async function listProducts(userId?: string): Promise<Product[]> {
+  await connection();
+  const supabase = await createClient();
+  const rows = await fetchProductRows(supabase);
+  const [seats, mine] = await Promise.all([
+    fetchSeats(
+      supabase,
+      rows.map((r) => r.id),
+    ),
+    userId ? fetchMyPayments(supabase, userId).then(activeOrders) : undefined,
+  ]);
+  const now = Date.now();
+  return rows.map((row) => toProduct(row, now, seats, mine));
+}
+
+/** 메인 배너 — 판매 기간 안의 상품, 마감 상품은 뒤로 */
+export async function listBannerProducts(userId?: string): Promise<Product[]> {
+  const products = await listProducts(userId);
+  return products
+    .filter((p) => p.status !== "ended")
+    .sort((a, b) => Number(a.status === "closed") - Number(b.status === "closed"));
+}
+
+/** 상품 상세 — 없거나 비공개거나 id 형식이 잘못되면 null */
+export async function getProduct(id: string, userId?: string): Promise<Product | null> {
+  if (!UUID.test(id)) return null;
+  await connection();
+  const supabase = await createClient();
+  const row = await fetchProductRow(supabase, id);
+  if (!row) return null;
+  const [seats, mine] = await Promise.all([
+    fetchSeats(supabase, [row.id]),
+    userId ? fetchMyPayments(supabase, userId).then(activeOrders) : undefined,
+  ]);
+  return toProduct(row, Date.now(), seats, mine);
+}
+
+/** 결제 내역 — 결제 완료(취소 전) 주문, 최신 결제순 */
+export async function listPayments(userId: string): Promise<Order[]> {
+  await connection();
+  const supabase = await createClient();
+  const orders = await toOrders(supabase, await fetchMyPayments(supabase, userId), Date.now());
+  return orders
+    .filter((o) => o.status === "paid")
+    .sort((a, b) => Date.parse(b.paidAt!) - Date.parse(a.paidAt!));
+}
+
+/** 취소 내역 — 환불 처리 중 · 완료, 최신 취소순 */
+export async function listCancellations(userId: string): Promise<Order[]> {
+  await connection();
+  const supabase = await createClient();
+  const orders = await toOrders(supabase, await fetchMyPayments(supabase, userId), Date.now());
+  return orders
+    .filter((o) => o.status === "refunding" || o.status === "refunded")
+    .sort((a, b) => Date.parse(b.canceledAt!) - Date.parse(a.canceledAt!));
+}
+
+/** 본인 주문만 — id는 포트원 paymentId(transaction_key) */
+export async function getOrder(id: string, userId: string): Promise<Order | null> {
+  if (!UUID.test(id)) return null;
+  await connection();
+  const supabase = await createClient();
+  const [order] = await toOrders(supabase, await fetchMyPayments(supabase, userId, id), Date.now());
+  return order ?? null;
+}
+
+/* ---------- 결제 ---------- */
+
+/** 판매 가능 여부 — 결제창 열기 전 · 결제 검증 시 같은 규칙 */
+function saleError(product: Product): { status: number; error: OrderErrorBody } | null {
+  if (product.myOrder) return { status: 409, error: { code: "ALREADY_PAID", message: "이미 결제한 모임이에요." } };
+  if (product.status === "ended") {
+    return { status: 409, error: { code: "ENDED", message: "판매가 끝난 모임이에요." } };
+  }
+  if (product.status === "closed") {
+    return {
+      status: 409,
+      error: { code: "SOLD_OUT", message: "방금 마감되었어요. 결제는 진행되지 않았어요.", product },
+    };
+  }
+  return null;
+}
+
+/**
+ * 결제창 호출 정보 — 판매 가능 여부를 확인하고 금액 · 상품명 · paymentId · customData를 서버에서 정한다.
+ * 원장에는 아무것도 기록하지 않는다 (결제 완료가 확인된 건만 기록).
+ */
+export async function preparePayment(
+  userId: string,
+  productId: string,
+  origin: string,
+): Promise<Result<PaymentRequestParams>> {
+  const product = await getProduct(productId, userId);
+  if (!product) return fail(404, { message: "상품을 찾을 수 없어요." });
+  const blocked = saleError(product);
+  if (blocked) return fail(blocked.status, blocked.error);
+
+  const { storeId, channelKey } = getPortoneConfig();
+  return {
+    ok: true,
+    value: {
+      storeId,
+      channelKey,
+      paymentId: crypto.randomUUID(),
+      orderName: product.title,
+      totalAmount: product.price,
+      currency: CURRENCY,
+      payMethod: "CARD",
+      redirectUrl: `${origin}/products/${product.id}/complete`,
+      customData: { productId: product.id, userId },
+    },
+  };
+}
+
+function parseCustomData(payment: PortonePayment): { productId?: string; userId?: string } {
+  const raw = "customData" in payment ? payment.customData : undefined;
+  if (!raw) return {};
+  try {
+    const data = JSON.parse(raw) as unknown;
+    return typeof data === "object" && data !== null ? (data as { productId?: string; userId?: string }) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 검증에 실패한 결제는 즉시 전액 환불한다 — 원장에는 기록하지 않는다 */
+async function refundUnrecorded(paymentId: string, amount: number, reason: string) {
+  const result = await cancelPortonePayment(paymentId, { amount, reason, requester: "ADMIN" });
+  if (!result.ok && !result.alreadyCancelled) {
+    console.error(`[payment] 자동 환불 실패 — 포트원 콘솔에서 수동 취소 필요 paymentId=${paymentId}`, result.message);
+  }
+}
+
+/**
+ * 결제 완료 처리 — 포트원 결제 조회 API로 검증한 뒤 원장(PAID) + 스냅샷을 기록한다. 같은 paymentId로 다시 호출해도 안전(멱등).
+ * 검증: 상점 · 결제자(customData.userId) · 상태 PAID · 통화 · 금액 = 현재 상품가 · 공개 · 판매 기간 · 정원 · 중복 결제
+ */
+export async function completePayment(userId: string, paymentId: string): Promise<Result<{ orderId: string }>> {
+  if (!UUID.test(paymentId)) return fail(400, { message: "결제 정보가 올바르지 않아요." });
+  await connection();
+  const supabase = await createClient();
+
+  // 이미 기록된 결제 — 새로고침 · 중복 요청
+  const recorded = await fetchMyPayments(supabase, userId, paymentId);
+  if (recorded.size > 0) return { ok: true, value: { orderId: paymentId } };
+
+  const payment = await getPortonePayment(paymentId);
+  if (!payment) return fail(404, { message: "결제 내역을 찾을 수 없어요." });
+
+  const custom = parseCustomData(payment);
+  const { storeId } = getPortoneConfig();
+  // 남의 결제 · 다른 상점 결제는 건드리지 않는다 (환불도 하지 않음)
+  if (custom.userId !== userId || ("storeId" in payment && payment.storeId !== storeId)) {
+    return fail(403, { message: "본인 결제만 확인할 수 있어요." });
+  }
+  if (payment.status !== "PAID") {
+    return fail(400, { code: "PAYMENT_NOT_PAID", message: "결제가 완료되지 않았어요." });
+  }
+
+  const paidAmount = payment.amount.total;
+  const refund = async (status: number, error: OrderErrorBody, reason: string) => {
+    await refundUnrecorded(paymentId, paidAmount, reason);
+    return fail(status, error);
+  };
+
+  const row = custom.productId ? await fetchProductRow(supabase, custom.productId) : null;
+  if (!row) {
+    return refund(
+      409,
+      { code: "VERIFICATION_FAILED", message: "판매 중인 모임이 아니에요. 결제는 자동으로 취소돼요." },
+      "판매 중이 아닌 상품",
+    );
+  }
+  if (payment.currency !== CURRENCY || paidAmount !== Number(row.price)) {
+    return refund(
+      400,
+      { code: "VERIFICATION_FAILED", message: "결제 금액이 상품 가격과 달라요. 결제는 자동으로 취소돼요." },
+      "결제 금액 불일치",
+    );
+  }
+  if (Date.now() >= Date.parse(row.event_at)) {
+    return refund(409, { code: "ENDED", message: "판매가 끝난 모임이에요. 결제는 자동으로 취소돼요." }, "판매 종료");
+  }
+
+  const { data: outcome, error } = await createAdminClient().rpc("record_payment_paid", {
+    p_transaction_key: paymentId,
+    p_user_id: userId,
+    p_product_id: row.id,
+    p_amount: paidAmount,
+    p_snapshot_payment: payment,
+    p_snapshot_product: row,
+  });
+  if (error) {
+    // 돈은 나갔는데 기록 실패 — 환불하지 않고 재시도(같은 paymentId로 complete 재호출)로 복구한다
+    console.error(`[payment] 원장 기록 실패 paymentId=${paymentId}`, error.message);
+    return fail(500, { message: "결제는 되었지만 확인이 늦어지고 있어요. 잠시 후 다시 시도해주세요." });
+  }
+
+  switch (outcome as string) {
+    case "RECORDED":
+    case "ALREADY_RECORDED":
+      return { ok: true, value: { orderId: paymentId } };
+    case "DUPLICATE":
+      return refund(
+        409,
+        { code: "ALREADY_PAID", message: "이미 결제한 모임이에요. 이번 결제는 자동으로 취소돼요." },
+        "중복 결제",
+      );
+    case "SOLD_OUT": {
+      const product = await getProduct(row.id, userId);
+      return refund(
+        409,
+        {
+          code: "SOLD_OUT",
+          message: "방금 마감되었어요. 결제는 자동으로 취소돼요.",
+          ...(product ? { product } : {}),
+        },
+        "정원 마감",
+      );
+    }
+    default:
+      return refund(
+        409,
+        { code: "VERIFICATION_FAILED", message: "판매 중인 모임이 아니에요. 결제는 자동으로 취소돼요." },
+        "판매 중이 아닌 상품",
+      );
+  }
+}
+
+/* ---------- 결제 취소 ---------- */
+
+/**
+ * 고객 결제 취소 — 본인 결제 · 환불 가능 기간(행사 3일 전 23:59 KST)까지 전액 환불.
+ * 포트원 취소 성공 후 원장에 CANCELLED(즉시 완료) 또는 CANCEL_REQUESTED(PG 비동기) 행을 추가한다.
+ */
+export async function cancelPayment(userId: string, paymentId: string): Promise<Result<Order>> {
+  if (!UUID.test(paymentId)) return fail(404, { message: "결제 내역을 찾을 수 없어요." });
+  await connection();
+  const supabase = await createClient();
+  const now = Date.now();
+
+  const groups = await fetchMyPayments(supabase, userId, paymentId);
+  const events = groups.get(paymentId);
+  const order = events ? toOrder(paymentId, events, now, new Map()) : null;
+  if (!events || !order) return fail(404, { message: "결제 내역을 찾을 수 없어요." });
+  if (!order.cancelable) {
+    return fail(409, { code: "NOT_CANCELABLE", message: "취소할 수 있는 기간이 지났어요." });
+  }
+
+  const result = await cancelPortonePayment(paymentId, {
+    amount: order.amount,
+    reason: "고객 요청 취소",
+    requester: "CUSTOMER",
+  });
+  if (!result.ok && !result.alreadyCancelled) return fail(502, { message: result.message });
+
+  // 취소 이후 상태를 다시 조회해 스냅샷으로 남긴다 (취소 내역 cancellations 포함)
+  const latest = await getPortonePayment(paymentId);
+  const type: PaymentType = result.ok && result.status === "REQUESTED" ? "CANCEL_REQUESTED" : "CANCELLED";
+  const currentProduct = await fetchProductRow(supabase, order.product.id);
+  const paidSnapshot = events.find((e) => e.type === "PAID")!.payment_snapshot!;
+
+  const { error } = await createAdminClient().rpc("record_payment_cancel", {
+    p_transaction_key: paymentId,
+    p_user_id: userId,
+    p_type: type,
+    p_amount: order.amount,
+    p_snapshot_payment: latest ?? paidSnapshot.snapshot_payment,
+    p_snapshot_product: currentProduct ?? paidSnapshot.snapshot_product,
+  });
+  if (error) {
+    console.error(`[payment] 취소 원장 기록 실패 — 포트원은 취소됨 paymentId=${paymentId}`, error.message);
+    return fail(500, { message: "취소는 접수됐지만 내역 반영이 늦어지고 있어요. 잠시 후 확인해주세요." });
+  }
+
+  const [updated] = await toOrders(supabase, await fetchMyPayments(supabase, userId, paymentId), Date.now());
+  return { ok: true, value: updated ?? order };
+}

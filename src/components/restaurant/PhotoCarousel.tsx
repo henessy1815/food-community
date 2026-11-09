@@ -2,12 +2,21 @@
 
 import Image from "next/image";
 import { useRef, useState } from "react";
-import { Badge } from "@/components/ui/Badge";
+import { PageBadge } from "@/components/ui/PageBadge";
 import { cn } from "@/lib/cn";
 import type { Photo } from "@/lib/restaurants";
 
-/** 상세 사진 캐러셀 — 스와이프(scroll-snap) + 카운터 뱃지 + 도트 */
-export function PhotoCarousel({ photos, className }: { photos: Photo[]; className?: string }) {
+/** 상세 사진 캐러셀 — 스와이프(scroll-snap) + 쪽번호 배지 + 도트 */
+export function PhotoCarousel({
+  photos,
+  label = "맛집 사진",
+  className,
+}: {
+  photos: Photo[];
+  /** 스크린리더용 캐러셀 이름 */
+  label?: string;
+  className?: string;
+}) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [index, setIndex] = useState(0);
 
@@ -23,7 +32,7 @@ export function PhotoCarousel({ photos, className }: { photos: Photo[]; classNam
   };
 
   return (
-    <section aria-roledescription="carousel" aria-label="맛집 사진" className={cn("flex flex-col", className)}>
+    <section aria-roledescription="carousel" aria-label={label} className={cn("flex flex-col", className)}>
       <div className="relative h-[280px] w-full overflow-hidden bg-background-muted md:h-[400px] lg:rounded-[16px]">
         <div
           ref={trackRef}
@@ -49,9 +58,11 @@ export function PhotoCarousel({ photos, className }: { photos: Photo[]; classNam
             </div>
           ))}
         </div>
-        <Badge className="absolute right-(--spacing-12) bottom-(--spacing-12)">
-          {index + 1} / {photos.length}
-        </Badge>
+        <PageBadge
+          current={index + 1}
+          total={photos.length}
+          className="absolute right-(--spacing-12) bottom-(--spacing-12)"
+        />
       </div>
       {photos.length > 1 && (
         <div className="flex items-center justify-center gap-[5px] pt-(--spacing-12)">

@@ -17,7 +17,7 @@ Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS v4 · Storyboo
 - `src/components/ui` — UI 컴포넌트
 - `src/stories` — 스토리
 - `src/lib/supabase` — 서버 전용 Supabase 클라이언트(`server.ts`) · 세션 갱신(`proxy.ts`)
-- `src/app/api` — BFF Route Handler (`auth/login` · `auth/callback` · `auth/logout` · `profile` · `products` · `products/[id]` · `payments/prepare` · `payments/complete` · `payments/[id]/cancel`)
+- `src/app/api` — BFF Route Handler (`auth/login` · `auth/callback` · `auth/logout` · `profile` · `products` · `products/[id]` · `payments/prepare` · `payments/complete` · `payments/[id]/cancel` · `payments/webhook`)
 - `src/lib/shop.ts` — 상품(product 테이블 · product-image 버킷) 조회 · 결제 준비 · 검증 · 취소 · 주문 조립
 - `src/lib/portone.ts` — 포트원 V2 서버 SDK 래퍼 (결제 조회 · 취소)
 - `src/lib/auth.ts` — `getCurrentUser()` 로그인 사용자 + profile 조회 (Suspense 경계 안에서 호출)

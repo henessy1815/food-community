@@ -1,5 +1,5 @@
 import "server-only";
-import { PortOneClient, RestError, type Payment } from "@portone/server-sdk";
+import { PortOneClient, RestError, Webhook, type Payment } from "@portone/server-sdk";
 
 /*
  * 포트원 V2 서버 연동 (BFF 전용) — 규칙 SSOT: .claude/rules/payment.md
@@ -29,6 +29,21 @@ export async function getPortonePayment(paymentId: string): Promise<PortonePayme
     return await client().payment.getPayment({ paymentId, storeId: getPortoneConfig().storeId });
   } catch (error) {
     if (error instanceof RestError && error.data.type === "PAYMENT_NOT_FOUND") return null;
+    throw error;
+  }
+}
+
+export type PortoneWebhook = Webhook.Webhook;
+
+/**
+ * 웹훅 서명 검증 (Standard Webhooks) — 원문 body(text)와 요청 헤더로 검증한다. JSON 파싱 전에 호출할 것.
+ * 서명 불일치 · 헤더 누락 · 시각 범위 초과 · 본문 형식 오류면 null
+ */
+export async function verifyPortoneWebhook(body: string, headers: Headers): Promise<PortoneWebhook | null> {
+  try {
+    return await Webhook.verify(env("PORTONE_WEBHOOK_SECRET"), body, Object.fromEntries(headers));
+  } catch (error) {
+    if (error instanceof Webhook.WebhookVerificationError || error instanceof Webhook.InvalidInputError) return null;
     throw error;
   }
 }

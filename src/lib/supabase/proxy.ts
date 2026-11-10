@@ -4,7 +4,12 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getSupabaseEnv } from "./env";
 
 /** 로그인 없이 접근 가능한 경로 — 나머지는 모두 로그인이 필요하다 */
-const PUBLIC = [/^\/login$/, /^\/api\/auth(\/|$)/];
+const PUBLIC = [
+  /^\/login$/,
+  /^\/api\/auth(\/|$)/,
+  // 포트원 웹훅 — 서명으로 검증한다 (.claude/rules/payment.md 10절)
+  /^\/api\/payments\/webhook$/,
+];
 
 /** 요청마다 Supabase 세션 쿠키를 갱신하고, 로그인 여부로 리다이렉트한다 (src/proxy.ts에서 호출) */
 export async function updateSession(request: NextRequest) {

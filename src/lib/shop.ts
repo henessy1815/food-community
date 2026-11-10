@@ -363,27 +363,80 @@ async function refundUnrecorded(paymentId: string, amount: number, reason: strin
 }
 
 /**
- * 결제 완료 처리 — 포트원 결제 조회 API로 검증한 뒤 원장(PAID) + 스냅샷을 기록한다. 같은 paymentId로 다시 호출해도 안전(멱등).
- * 검증: 상점 · 결제자(customData.userId) · 상태 PAID · 통화 · 금액 = 현재 상품가 · 공개 · 판매 기간 · 정원 · 중복 결제
+ * 결제 완료 처리 (브라우저) — 포트원 결제 조회 API로 검증한 뒤 원장(PAID) + 스냅샷을 기록한다. 같은 paymentId로 다시 호출해도 안전(멱등).
+ * 검증: 상점 · 결제자(customData.userId = 세션 사용자) · 이후는 recordPaidPayment
  */
 export async function completePayment(userId: string, paymentId: string): Promise<Result<{ orderId: string }>> {
   if (!UUID.test(paymentId)) return fail(400, { message: "결제 정보가 올바르지 않아요." });
   await connection();
   const supabase = await createClient();
 
-  // 이미 기록된 결제 — 새로고침 · 중복 요청
+  // 이미 기록된 결제 — 새로고침 · 중복 요청 · 웹훅이 먼저 기록
   const recorded = await fetchMyPayments(supabase, userId, paymentId);
   if (recorded.size > 0) return { ok: true, value: { orderId: paymentId } };
 
   const payment = await getPortonePayment(paymentId);
   if (!payment) return fail(404, { message: "결제 내역을 찾을 수 없어요." });
 
-  const custom = parseCustomData(payment);
-  const { storeId } = getPortoneConfig();
   // 남의 결제 · 다른 상점 결제는 건드리지 않는다 (환불도 하지 않음)
-  if (custom.userId !== userId || ("storeId" in payment && payment.storeId !== storeId)) {
+  if (parseCustomData(payment).userId !== userId || !isOwnStore(payment)) {
     return fail(403, { message: "본인 결제만 확인할 수 있어요." });
   }
+  return recordPaidPayment(supabase, paymentId, payment, userId, { withProduct: true });
+}
+
+/**
+ * 결제 완료 동기화 (웹훅 Transaction.Paid) — 브라우저 complete 없이도 기록한다. 사용자 id는 customData.userId.
+ * 세션이 없으므로 기록 여부만 service role로 확인하고(규칙 7절 예외), 상품은 anon(공개 상품 RLS)으로 읽는다.
+ * 규칙: .claude/rules/payment.md 10-1절
+ */
+export async function syncPaidPayment(paymentId: string): Promise<Result<{ orderId: string }>> {
+  if (!UUID.test(paymentId)) return fail(400, { message: "결제 정보가 올바르지 않아요." });
+  await connection();
+
+  // 이미 기록된 결제는 다시 검증하지 않는다 — 기록 후 가격 변경 · 행사 시작으로 정상 결제가 환불되지 않게
+  if (await isPaidRecorded(paymentId)) return { ok: true, value: { orderId: paymentId } };
+
+  const payment = await getPortonePayment(paymentId);
+  if (!payment) return fail(404, { message: "결제 내역을 찾을 수 없어요." });
+
+  const { userId } = parseCustomData(payment);
+  if (!isOwnStore(payment) || !userId || !UUID.test(userId)) {
+    return fail(403, { message: "이 상점의 결제가 아니거나 결제자 정보가 없어요." });
+  }
+  // 세션 없는 요청 — createClient()는 anon으로 동작한다 (공개 상품만 조회)
+  const supabase = await createClient();
+  return recordPaidPayment(supabase, paymentId, payment, userId, { withProduct: false });
+}
+
+function isOwnStore(payment: PortonePayment) {
+  return !("storeId" in payment) || payment.storeId === getPortoneConfig().storeId;
+}
+
+/** 원장에 PAID 행이 있는지 — 웹훅 전용 (세션이 없어 service role로 type만 확인) */
+async function isPaidRecorded(paymentId: string) {
+  const { data, error } = await createAdminClient()
+    .from("payment")
+    .select("type")
+    .eq("transaction_key", paymentId)
+    .eq("type", "PAID")
+    .limit(1);
+  if (error) throw new Error(`결제 기록 여부를 확인하지 못했어요: ${error.message}`);
+  return data.length > 0;
+}
+
+/**
+ * 결제 검증 + 원장 기록 — 브라우저 complete · 웹훅이 공유한다 (규칙 4절 5~7번).
+ * 상태 PAID · 공개 상품 · 통화 · 금액 = 현재 상품가 · 판매 기간 · 정원 · 중복 결제. 상태 외 실패는 즉시 전액 자동 환불.
+ * withProduct: SOLD_OUT 응답에 최신 상품을 담을지 (세션이 있는 브라우저 요청만 — 참여 인원 조회에 로그인이 필요하다)
+ */
+async function recordPaidPayment(
+  supabase: Supabase,
+  paymentId: string,
+  payment: PortonePayment,
+  userId: string,
+  { withProduct }: { withProduct: boolean },
+): Promise<Result<{ orderId: string }>> {
   if (payment.status !== "PAID") {
     return fail(400, { code: "PAYMENT_NOT_PAID", message: "결제가 완료되지 않았어요." });
   }
@@ -394,7 +447,8 @@ export async function completePayment(userId: string, paymentId: string): Promis
     return fail(status, error);
   };
 
-  const row = custom.productId ? await fetchProductRow(supabase, custom.productId) : null;
+  const { productId } = parseCustomData(payment);
+  const row = productId ? await fetchProductRow(supabase, productId) : null;
   if (!row) {
     return refund(
       409,
@@ -422,7 +476,7 @@ export async function completePayment(userId: string, paymentId: string): Promis
     p_snapshot_product: row,
   });
   if (error) {
-    // 돈은 나갔는데 기록 실패 — 환불하지 않고 재시도(같은 paymentId로 complete 재호출)로 복구한다
+    // 돈은 나갔는데 기록 실패 — 환불하지 않고 재시도(complete 재호출 · 웹훅 재전송)로 복구한다
     console.error(`[payment] 원장 기록 실패 paymentId=${paymentId}`, error.message);
     return fail(500, { message: "결제는 되었지만 확인이 늦어지고 있어요. 잠시 후 다시 시도해주세요." });
   }
@@ -438,7 +492,7 @@ export async function completePayment(userId: string, paymentId: string): Promis
         "중복 결제",
       );
     case "SOLD_OUT": {
-      const product = await getProduct(row.id, userId);
+      const product = withProduct ? await getProduct(row.id, userId) : null;
       return refund(
         409,
         {
@@ -495,7 +549,8 @@ export async function cancelPayment(userId: string, paymentId: string): Promise<
     p_transaction_key: paymentId,
     p_user_id: userId,
     p_type: type,
-    p_amount: order.amount,
+    // 원장 부호: 취소 행은 − (전액 취소 = −PAID 금액)
+    p_amount: -order.amount,
     p_snapshot_payment: latest ?? paidSnapshot.snapshot_payment,
     p_snapshot_product: currentProduct ?? paidSnapshot.snapshot_product,
   });

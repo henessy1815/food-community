@@ -4,6 +4,7 @@ paths:
   - "src/lib/portone.ts"
   - "src/lib/products.ts"
   - "src/lib/supabase/admin.ts"
+  - "src/lib/supabase/proxy.ts"
   - "src/app/api/payments/**"
   - "src/app/products/**"
   - "src/app/orders/**"
@@ -18,185 +19,180 @@ paths:
 
 # 결제 규칙 (SSOT)
 
-결제·취소·환불·웹훅·정산 등 **돈이 오가는 모든 기능**은 이 문서를 따른다.
-이 문서와 코드가 다르면 이 문서가 기준이다. 규칙을 바꿔야 하면 **이 문서를 먼저 고치고** 코드를 맞춘다.
+결제 · 취소 · 환불 · 웹훅 등 돈이 오가는 기능은 이 문서를 따른다. 코드와 다르면 이 문서가 기준이고, 규칙을 바꿀 땐 **문서를 먼저** 고친다.
 
-- PG: 포트원 V2 (`@portone/browser-sdk/v2` · `@portone/server-sdk`)
-- 문서·API 스키마 확인은 PortOne MCP(`portone-mcp-server`)로 한다. 기억에 의존해 API 필드명을 쓰지 않는다.
+- PG: 포트원 V2 (`@portone/browser-sdk/v2` · `@portone/server-sdk`). API 필드명은 PortOne MCP로 확인하고 쓴다.
 - 저장소: Supabase `payment`(원장) · `payment_snapshot`(스냅샷) · `product`(상품)
-
----
 
 ## 1. 구성
 
 | 위치 | 역할 |
 |---|---|
-| `src/lib/portone.ts` | 포트원 서버 SDK 래퍼 — 결제 조회 · 취소 · 결제수단 표기. API Secret은 여기서만 읽는다 |
-| `src/lib/shop.ts` | 상품 조회 · 결제 준비 · 결제 완료 검증 · 취소 · 주문 조립 (BFF 도메인 로직) |
-| `src/lib/supabase/admin.ts` | service role 클라이언트 — **원장 기록 함수 호출 전용** |
-| `src/app/api/payments/prepare` | 결제창 호출 정보 발급 |
-| `src/app/api/payments/complete` | 결제 검증 + 원장 기록 |
-| `src/app/api/payments/[id]/cancel` | 고객 결제 취소 |
-| `src/app/products/[id]/complete` | 결제창 `redirectUrl` (결제 완료 페이지) |
-| `src/app/orders/[id]` | 결제 결과 (id = 포트원 paymentId) |
+| `src/lib/portone.ts` | 포트원 SDK 래퍼 — 결제 조회 · 취소 · 웹훅 서명 검증. **포트원 비밀값은 여기서만 읽는다** |
+| `src/lib/shop.ts` | 결제 준비 · 검증 · 기록 · 취소 · 주문 조립 (도메인 로직) |
+| `src/lib/supabase/admin.ts` | service role 클라이언트 — 원장 기록(+ 웹훅 기록 여부 확인) 전용 |
+| `api/payments/prepare` | 결제창 호출 정보 발급 |
+| `api/payments/complete` | 브라우저 결제 완료 → 검증 · 기록 |
+| `api/payments/[id]/cancel` | 고객 결제 취소 |
+| `api/payments/webhook` | 포트원 웹훅 수신 |
+| `products/[id]/complete` · `orders/[id]` | 결제창 `redirectUrl` · 결제 결과(원장 읽기만) |
 
-- 클라이언트 컴포넌트는 포트원 API·Supabase를 직접 호출하지 않는다. 결제창 SDK(`requestPayment`)만 예외다.
-- 결제 관련 서버 모듈은 `import "server-only"`로 시작한다.
+- 클라이언트는 포트원 API · Supabase를 직접 호출하지 않는다(결제창 `requestPayment`만 예외). 서버 모듈은 `import "server-only"`.
+- 로그는 `[payment]` 접두사 + `paymentId` + 오류 메시지만. 카드 · 구매자 정보 · 비밀값 · 포트원 응답 원문 금지.
 
-## 2. 환경변수
-
-`.env.example`이 목록의 기준이다. 모두 **서버 전용**이며 `NEXT_PUBLIC_` 접두사를 쓰지 않는다.
+## 2. 환경변수 (`.env.example`이 기준 · 모두 서버 전용 · `NEXT_PUBLIC_` 금지)
 
 | 키 | 비밀 | 용도 |
 |---|---|---|
-| `PORTONE_STORE_ID` | 아님 | 상점 ID — prepare 응답으로만 브라우저에 전달 |
-| `PORTONE_CHANNEL_KEY` | 아님 | 채널 키 — prepare 응답으로만 브라우저에 전달 |
-| `PORTONE_API_SECRET` | **비밀** | V2 API Secret — 결제 조회 · 취소. 응답·로그·클라이언트에 절대 노출 금지 |
-| `PORTONE_WEBHOOK_SECRET` | **비밀** | 웹훅 서명 검증 (웹훅 연동 시) |
-| `SUPABASE_SECRET_KEY` | **비밀** | service role — `record_payment_*` 호출 전용 |
+| `PORTONE_STORE_ID` · `PORTONE_CHANNEL_KEY` | 아님 | 결제창 호출 — prepare 응답으로만 브라우저에 전달 |
+| `PORTONE_API_SECRET` | **비밀** | 결제 조회 · 취소 |
+| `PORTONE_WEBHOOK_SECRET` | **비밀** | 웹훅 서명 검증 |
+| `SUPABASE_SECRET_KEY` | **비밀** | service role (`record_payment_*`) |
 
-- 상점 ID · 채널 키 · 금액을 클라이언트 코드에 하드코딩하지 않는다.
-- 테스트 채널 → 실연동 채널 전환은 환경변수 교체만으로 끝나야 한다.
+- 상점 ID · 채널 키 · 금액을 클라이언트 코드에 하드코딩하지 않는다. 테스트 → 실연동 전환은 환경변수 교체만으로 끝난다.
 
-## 3. 결제 흐름 (일반 결제 · 카드)
+## 3. 결제 흐름 (카드 일반 결제)
 
 ```
-[상세] 결제하기 → 결제 시트(환불 규정 동의)
-  → POST /api/payments/prepare { productId }
-      서버: 로그인 · 공개 상품 · 판매 기간 · 정원 · 중복 결제 확인
-      응답: storeId · channelKey · paymentId(uuid) · orderName(상품명) · totalAmount(상품가)
-            · currency KRW · payMethod CARD · redirectUrl · customData { productId, userId }
-  → PortOne.requestPayment({ ...응답, forceRedirect: true })
-  → 포트원이 redirectUrl로 이동: /products/[id]/complete?paymentId=…(&code=…&message=…)
-      code 있음 → 결제 실패 화면 (서버 호출 없음, 원장 기록 없음)
-      code 없음 → POST /api/payments/complete { paymentId } → 성공 시 /orders/[paymentId]
+결제하기 → POST /api/payments/prepare { productId }
+  서버: 로그인 · 공개 상품 · 판매 기간 · 정원 · 중복 결제 확인(안내용)
+  응답: storeId · channelKey · paymentId(uuid) · orderName · totalAmount · currency KRW
+        · payMethod CARD · redirectUrl · customData { productId, userId }
+→ PortOne.requestPayment({ ...응답, forceRedirect: true })
+→ /products/[id]/complete?paymentId=…(&code=…)
+    code 있음 → 실패 화면 (서버 호출 · 기록 없음)
+    code 없음 → POST /api/payments/complete → /orders/[paymentId]
+→ 동시에 포트원 웹훅 Transaction.Paid → POST /api/payments/webhook (도착 순서 보장 없음)
 ```
 
-- **결제 정보는 서버가 정한다.** `paymentId`(uuid v4) · `orderName` · `totalAmount` · `customData`는 prepare에서 만들고, 클라이언트가 보낸 금액·상품명은 어디에도 쓰지 않는다.
-- `customData.userId`는 세션 사용자 id다. 클라이언트 입력으로 받지 않는다.
-- `forceRedirect: true`를 유지한다. PC · 모바일 결과 처리를 `redirectUrl` 하나로 통일한다.
-- `redirectUrl`은 요청 origin 기준 절대 주소 `/products/{productId}/complete`다.
-- prepare는 원장에 아무것도 쓰지 않는다. 결제창을 열었다가 닫은 시도는 기록하지 않는다(포트원 콘솔에 남는다).
+- `paymentId` · `orderName` · `totalAmount` · `customData`는 **서버가 정한다**. `customData.userId` = 세션 사용자.
+- prepare는 원장에 쓰지 않는다. 결제창 이탈 · 실패는 기록하지 않는다(포트원이 원본).
 
-## 4. 결제 검증 (`completePayment`) — 하나라도 실패하면 기록하지 않는다
+## 4. 결제 검증 · 기록 — 브라우저 · 웹훅 공용 (`recordPaidPayment`)
 
-순서대로 확인한다.
+진입 조건 (경로별):
 
-1. `paymentId`가 uuid 형식이다.
-2. 원장에 같은 `transaction_key`가 이미 있으면 **성공으로 응답한다** (멱등 · 새로고침).
-3. 포트원 **결제 조회 API**(`getPayment`)로 실제 결제를 가져온다. 브라우저가 준 결과(`code` 없음)만 믿지 않는다.
-4. `customData.userId` = 세션 사용자이고, `storeId` = `PORTONE_STORE_ID`이다. 아니면 403. **환불하지 않는다** (남의 결제일 수 있다).
-5. `status === "PAID"`. 아니면 실패 응답 (`PAYMENT_NOT_PAID`). 환불하지 않는다.
-6. 아래 실패는 **즉시 전액 자동 환불**(`requester: "ADMIN"`)하고 실패를 응답한다.
-   - 상품이 없거나 비공개(`status <> 'Public'`) → `VERIFICATION_FAILED`
-   - `currency !== "KRW"` 또는 `amount.total !== 현재 product.price` → `VERIFICATION_FAILED` (위변조 의심)
-   - 행사 시작 시각이 지남 → `ENDED`
-   - `record_payment_paid` 결과 `SOLD_OUT`(정원 초과) → `SOLD_OUT` · `DUPLICATE`(같은 상품 결제 완료 건 있음) → `ALREADY_PAID`
-7. `record_payment_paid` 결과 `RECORDED` · `ALREADY_RECORDED`면 성공이다.
+| | 브라우저 `completePayment` | 웹훅 `syncPaidPayment` |
+|---|---|---|
+| 이미 기록됨 | 세션 RLS로 원장 조회 → 성공 | service role로 `PAID` 존재만 확인 → 성공 (**재검증 금지**) |
+| 결제 조회 없음 | 404 | 무시 |
+| 사용자 | `customData.userId` = 세션 사용자, 아니면 403 | `customData.userId`(uuid), 없으면 무시 |
+| 상점 | `storeId` = `PORTONE_STORE_ID`, 아니면 403 | 같음, 아니면 무시 |
 
-- 자동 환불이 실패하면 `console.error("[payment] 자동 환불 실패 …")`로 남긴다. 포트원 콘솔에서 수동 취소하는 대상이다.
-- **원장 기록 자체가 실패**(DB 오류)하면 환불하지 않는다. 결제는 유효하므로 같은 paymentId로 complete를 다시 호출해 복구한다(사용자에게 "다시 확인"을 안내한다). 웹훅 연동 후에는 웹훅이 복구한다.
-- 실패 화면(“0원 · 청구되지 않음”)은 결제되지 않았거나 자동 환불된 코드(`PAYMENT_NOT_PAID` · `VERIFICATION_FAILED` · `SOLD_OUT` · `ENDED` · `ALREADY_PAID`)에서만 보여준다. 그 외 오류는 "결제를 확인하지 못했어요 + 다시 확인"을 보여준다.
+- 사용자 · 상점 불일치는 **환불하지 않는다**(남의 결제일 수 있다). 기록 여부를 먼저 보는 이유: 기록 후 가격 변경 · 행사 시작 시 재검증하면 정상 결제가 환불된다.
 
-## 5. 원장 `payment` — append-only
+공용 검증 (순서대로, 결제 조회 API 응답 기준 — 브라우저 결과 · 웹훅 본문 미신뢰):
+
+1. `status === "PAID"` 아니면 `PAYMENT_NOT_PAID` (환불 없음)
+2. 아래는 **즉시 전액 자동 환불**(`requester: "ADMIN"`) 후 실패
+   - 상품 없음 · 비공개 → `VERIFICATION_FAILED`
+   - `currency !== "KRW"` 또는 `amount.total !== 현재 product.price` → `VERIFICATION_FAILED`
+   - 행사 시작 시각 지남 → `ENDED`
+   - `record_payment_paid` → `DUPLICATE` → `ALREADY_PAID` · `SOLD_OUT` → `SOLD_OUT`
+3. `record_payment_paid` → `RECORDED` · `ALREADY_RECORDED` = 성공
+
+- 자동 환불 실패 → `console.error("[payment] 자동 환불 실패 …")` (포트원 콘솔 수동 취소 대상).
+- 원장 기록 DB 오류 → **환불하지 않는다**. 브라우저는 "다시 확인", 웹훅은 5xx로 재시도해 복구한다.
+- 실패 화면("0원 · 청구되지 않음")은 위 실패 코드에서만. 그 외 오류는 "결제를 확인하지 못했어요 + 다시 확인".
+- 웹훅이 먼저 기록 → 이후 브라우저 complete는 "이미 기록됨"으로 성공. 웹훅이 먼저 환불 → 브라우저는 `PAYMENT_NOT_PAID`.
+
+## 5. 중복 결제 방지
+
+- **1인 1상품 1자리.** 같은 사용자가 같은 상품에 취소되지 않은 `PAID`가 있으면 새 결제를 막는다(취소하면 재결제 가능).
+- 최종 판단은 `record_payment_paid`: `product` 행 `for update` 잠금 → `ALREADY_RECORDED`(같은 paymentId) → `DUPLICATE`(같은 사용자 · 상품) → `SOLD_OUT`(정원) 순으로 판정 후 INSERT. 브라우저 · 웹훅이 동시에 와도 1건만 기록된다. `unique (transaction_key, type)`이 DB에서 한 번 더 막는다.
+
+## 6. 원장 `payment` — append-only
 
 | 컬럼 | 규칙 |
 |---|---|
-| `transaction_key` | 포트원 `paymentId`(uuid). 결제 1건의 모든 이벤트 행을 묶는다 |
-| `type` | `PAID` · `CANCEL_REQUESTED` · `CANCELLED` (check 제약) |
-| `amount` | 그 이벤트의 금액(원). **항상 양수** (check 제약). 부호로 방향을 표현하지 않는다 |
-| `product_id` · `user_id` | 결제 시점 값. 취소 행도 PAID 행과 같은 값 |
+| `transaction_key` | 포트원 `paymentId`(uuid, 웹훅 `data.paymentId`와 같은 값). 결제 1건의 모든 행을 묶는 그룹 키 |
+| `type` | `PAID` · `CANCEL_REQUESTED` · `CANCELLED` |
+| `amount` | **결제 `+` · 취소 `−`** (`payment_amount_sign` 제약). 전액 취소만 지원하므로 취소 행 = `−PAID.amount` |
+| `product_id` · `user_id` | 결제 시점 값. 취소 행도 PAID 행과 같다 |
 | `payment_snapshot_id` | 행마다 새 스냅샷 1개 (unique) |
 
-- **INSERT만 허용한다.** UPDATE · DELETE · TRUNCATE는 트리거(`forbid_payment_mutation`)가 service role 포함 모두 막는다. 상태를 바꾸려면 새 행을 추가한다.
-- `unique (transaction_key, type)` — 같은 결제에 같은 이벤트는 한 번만 기록된다. 이게 멱등성의 근거다.
-- 결제 1건의 상태 = 가장 진행된 이벤트: `CANCELLED`(환불 완료) > `CANCEL_REQUESTED`(환불 처리 중) > `PAID`(결제 완료).
-- 순결제액 = `PAID.amount − CANCELLED.amount`. 매출·정산 집계는 이 식으로만 한다.
-- 결제 실패 · 결제창 이탈 · 검증 실패 후 자동 환불된 건은 원장에 없다 (포트원이 원본).
-- 현재는 **전액 취소만** 지원한다. 부분 취소를 도입하려면 이 문서에 type · unique 키 규칙을 먼저 정의한다.
+- **INSERT만.** UPDATE · DELETE · TRUNCATE는 트리거 `forbid_payment_mutation`이 service role 포함 모두 막는다. 상태 변경 = 새 행 추가.
+- 상태 = 가장 진행된 이벤트: `CANCELLED`(환불 완료) > `CANCEL_REQUESTED`(환불 처리 중) > `PAID`.
+- 순결제액 = `sum(amount) where type in ('PAID', 'CANCELLED')`. `CANCEL_REQUESTED`는 진행 표시이므로 합산하지 않는다.
+- 부분 취소는 미지원. 도입 시 type · unique 키 · 부호 규칙을 이 문서에 먼저 정의한다.
 
-## 6. 스냅샷 `payment_snapshot` — 반드시 함께 기록
+## 7. 스냅샷 `payment_snapshot`
 
-- 원장 행 1개 = 스냅샷 1개. 원장 행과 **같은 트랜잭션**(`record_payment_*` 함수 안)에서 만든다. 스냅샷 없는 원장 행은 없다.
-- `snapshot_payment`: 그 이벤트 시점의 포트원 결제 조회 응답 전체(취소 행은 취소 후 다시 조회한 응답).
-- `snapshot_product`: 그 이벤트 시점의 `product` 행 전체(`PRODUCT_SELECT` 모양). 취소 시 상품이 비공개면 PAID 스냅샷의 상품으로 대신한다.
-- 스냅샷도 append-only다(같은 트리거).
-- **주문 화면(결제 내역 · 결과 · 취소 내역)의 상품명 · 가격 · 일시 · 장소 · 이미지는 PAID 스냅샷의 상품을 쓴다.** 상품이 나중에 바뀌거나 비공개가 되어도 구매 당시 내용이 보인다.
-- 결제 수단 표기·결제 시각(`paidAt`)도 PAID 스냅샷의 포트원 응답에서 읽는다.
-- `snapshot_payment`에는 구매자 정보가 들어 있다. 원문을 클라이언트로 보내지 않는다. 화면에 필요한 필드만 골라 `Order`로 조립한다.
+- 원장 행 1개 = 스냅샷 1개, `record_payment_*` 안에서 **같은 트랜잭션**으로 만든다. 스냅샷도 append-only.
+- `snapshot_payment` = 그 시점 포트원 결제 조회 응답 전체 · `snapshot_product` = 그 시점 `product` 행(`PRODUCT_SELECT`). 취소 시 상품이 비공개면 PAID 스냅샷 상품을 쓴다.
+- 주문 화면의 상품 정보 · 결제 수단 · `paidAt`은 **PAID 스냅샷**에서 읽는다.
+- `snapshot_payment`에는 구매자 정보가 있다. 원문을 클라이언트로 보내지 말고 필요한 필드만 `Order`로 조립한다.
 
-## 7. 권한 · RLS
+## 8. 권한 · RLS
 
-| 대상 | anon | authenticated | service role (BFF) |
+| 대상 | anon | authenticated | service role |
 |---|---|---|---|
-| `product` | 공개 상품 SELECT | 공개 상품 SELECT | — |
-| `payment` | 없음 | **본인 행 SELECT만** | `record_payment_*`로만 INSERT |
-| `payment_snapshot` | 없음 | 본인 결제의 스냅샷 SELECT만 | `record_payment_*`로만 INSERT |
-| `product_seat_counts(uuid[])` | 불가 | 실행 (security definer, 숫자만 반환 — advisor 경고는 의도된 것) | 실행 |
+| `product` | 공개 SELECT | 공개 SELECT | — |
+| `payment` · `payment_snapshot` | 없음 | 본인 것 SELECT | `record_payment_*`로만 INSERT |
+| `product_seat_counts` | 불가 | 실행 (security definer, advisor 경고 의도됨) | 실행 |
 | `record_payment_paid` · `record_payment_cancel` | 불가 | 불가 | 실행 |
 
-- 원장 **조회**는 사용자 세션 클라이언트(`src/lib/supabase/server.ts`)로 해서 RLS를 거친다.
-- 원장 **기록**은 `createAdminClient().rpc("record_payment_paid" | "record_payment_cancel")`로만 한다. 테이블에 직접 `insert`하지 않는다.
-- service role 클라이언트로 원장 외 데이터를 읽거나 쓰지 않는다.
+- 원장 조회는 세션 클라이언트(`server.ts`, RLS). 기록은 `createAdminClient().rpc("record_payment_*")`로만, 테이블 직접 insert 금지.
+- 예외: 웹훅은 세션이 없으므로 **기록 여부 확인**(`transaction_key` · `type`)만 service role로 한다. 상품은 anon으로 읽는다.
+- service role로 원장 외 데이터를 읽거나 쓰지 않는다.
 
-## 8. 상품 공개 · 판매 · 정원
+## 9. 상품 · 판매 · 정원
 
-- 판매 대상 = `product.status = 'Public'`. 비공개 상품은 목록 · 상세 · 결제 준비 · 결제 검증에서 모두 "없는 상품"이다.
-- 판매 상태: 행사 시작(`event_at`) 이후 `ended` → 정원 도달 `closed` → 그 외 `on_sale`.
-- 참여 인원 = 취소(`CANCEL_REQUESTED` · `CANCELLED`)되지 않은 `PAID` 건수 (`product_seat_counts`).
-- 1인 1자리 · 같은 상품 중복 결제 금지(취소하면 다시 결제 가능).
-- 정원 · 중복 판단의 최종 기준은 `record_payment_paid`다. 함수가 `product` 행을 `for update`로 잠그고 확인 · 기록하므로 동시 결제에도 초과 판매되지 않는다. prepare의 확인은 안내용이다.
-- 상품 가격 변경은 이미 결제된 건에 영향을 주지 않는다(스냅샷). 결제창이 열린 사이 가격이 바뀌면 검증에서 금액 불일치로 자동 환불된다.
+- 판매 대상 = `product.status = 'Public'`. 비공개는 모든 경로에서 "없는 상품".
+- 판매 상태: `event_at` 이후 `ended` → 정원 도달 `closed` → `on_sale`.
+- 참여 인원 = 취소 행이 없는 `PAID` 건수(`product_seat_counts`).
+- 가격 변경은 기존 결제에 영향 없음(스냅샷). 결제창이 열린 사이 바뀌면 금액 불일치로 자동 환불.
 
-## 9. 결제 취소 · 환불
+## 10. 고객 취소 (`cancelPayment`)
 
-- 고객 취소 = **전액 환불만**. 본인 결제이고 상태가 `PAID`일 때만 가능하다.
-- 환불 가능 기간: 행사 시작 **3일 전 23:59:59(KST)까지** (`REFUND_DAYS = 3`). 기준은 PAID 스냅샷 상품의 `event_at`이다. 이후는 취소 불가(`NOT_CANCELABLE`).
-- 포트원 취소 요청: `amount` = 원장 PAID 금액, `currentCancellableAmount` = 같은 값(잔액이 다르면 포트원이 거절 → 중복 · 경합 취소 방지), `requester: "CUSTOMER"`, `reason: "고객 요청 취소"`.
-- 포트원 취소 결과 → 원장 기록:
-  - `SUCCEEDED` → `CANCELLED` 행 (환불 완료)
-  - `REQUESTED` → `CANCEL_REQUESTED` 행 (환불 처리 중). 완료는 웹훅이 `CANCELLED` 행을 추가해 반영한다
-  - `PAYMENT_ALREADY_CANCELLED` 오류 → 이미 취소된 것이므로 `CANCELLED` 행을 기록해 동기화
-  - 그 외 실패 → 원장 기록 없이 오류 응답
-- **포트원 취소가 먼저, 원장 기록이 나중이다.** 원장 기록이 실패하면 `console.error("[payment] 취소 원장 기록 실패 …")`를 남기고, 다시 취소 요청 시 `PAYMENT_ALREADY_CANCELLED` 경로로 복구된다.
-- 운영자 취소(관리자 · 자동 환불)는 `requester: "ADMIN"`을 쓴다. 원장에 있는 결제를 운영자가 취소하면 고객 취소와 같은 방식으로 원장에 기록한다.
+- 본인 결제 · 상태 `PAID` · **전액 환불만**. 기한: 행사 **3일 전 23:59:59 KST**(`REFUND_DAYS = 3`, PAID 스냅샷 `event_at` 기준). 이후 `NOT_CANCELABLE`.
+- 포트원 취소: `amount` = `currentCancellableAmount` = PAID 금액(잔액 불일치 시 포트원이 거절 → 중복 · 경합 취소 방지), `requester: "CUSTOMER"`, `reason: "고객 요청 취소"`.
+- 결과 → 원장 (`amount = −PAID 금액`):
+  - `SUCCEEDED` → `CANCELLED` · `REQUESTED` → `CANCEL_REQUESTED`(완료는 웹훅이 반영)
+  - `PAYMENT_ALREADY_CANCELLED` → `CANCELLED`로 동기화 · 그 외 실패 → 기록 없이 오류
+- **포트원 취소가 먼저, 원장 기록이 나중.** 기록 실패 시 `console.error("[payment] 취소 원장 기록 실패 …")`, 재요청 시 `PAYMENT_ALREADY_CANCELLED` 경로로 복구.
+- 운영자 취소는 `requester: "ADMIN"`. 원장에 있는 결제면 같은 방식으로 기록한다.
 
-## 10. 웹훅 (미구현 — 도입 시 지킬 규칙)
+## 11. 웹훅 `POST /api/payments/webhook`
 
-- 엔드포인트: `POST /api/payments/webhook`. proxy의 로그인 검사 대상에서 제외한다(`src/lib/supabase/proxy.ts`의 `PUBLIC`).
-- **원문 body(text)**로 `Webhook.verify(PORTONE_WEBHOOK_SECRET, body, headers)` 서명 검증. 실패 시 400. JSON 파싱 후 검증하지 않는다.
-- 웹훅 본문의 금액 · 상태를 믿지 않는다. `data.paymentId`로 **결제 조회 API를 다시 호출**해 그 결과로 처리한다.
-- 처리 로직은 complete · cancel과 **같은 함수**를 공유한다(검증 규칙 4절, 기록 함수 `record_payment_*`). 웹훅용 별도 판정 로직을 만들지 않는다.
-- 같은 웹훅이 여러 번 와도 결과가 같아야 한다(`unique (transaction_key, type)` · `ALREADY_RECORDED`).
-- 브라우저 complete 호출 없이 웹훅만 와도 결제가 기록되어야 한다(이탈 · 네트워크 끊김 대비). 이때 사용자 id는 `customData.userId`를 쓴다.
-- 처리 성공 · 이미 처리됨 → 200. 일시적 오류 → 5xx(포트원 재시도).
-- `CANCEL_REQUESTED` 이후 취소 완료 웹훅이 오면 `CANCELLED` 행을 추가한다.
+- 콘솔: 결제 연동 › 연동 관리 › 결제알림(Webhook) 관리 › 결제모듈 V2 · 버전 `2024-04-25` · `application/json`. 테스트 · 실연동 URL · 시크릿은 각각 설정한다.
+- proxy 로그인 검사 제외(`src/lib/supabase/proxy.ts`의 `PUBLIC`).
+- **원문 body(text)** + 헤더로 `verifyPortoneWebhook` (`Webhook.verify`) 서명 검증. JSON 파싱 후 검증 금지.
+- 본문의 금액 · 상태를 믿지 않는다. `data.paymentId`로 결제 조회 API를 다시 호출해 판단한다.
+- 판정 · 기록은 complete · cancel과 **같은 함수**를 쓴다. 웹훅 전용 판정 로직을 만들지 않는다.
+- 같은 웹훅이 여러 번 와도 결과가 같다(`ALREADY_RECORDED` · unique 키). 포트원은 실패 시 최대 5회 재전송한다.
 
-## 11. 화면 · 응답
+| 응답 | 경우 |
+|---|---|
+| 200 | 처리 성공 · 이미 처리됨 · 처리 대상 아님(모르는 type · 결제 없음 · 남의 상점 · 검증 실패 후 자동 환불) |
+| 400 | 서명 검증 실패 |
+| 5xx | 시크릿 미설정 · 포트원 조회 오류 · 원장 기록 DB 오류 → 포트원 재시도 |
 
-- 실패 응답 모양: `OrderErrorBody { code?, message, product? }` (`src/lib/products.ts`). 새 실패 사유는 `code`에 추가하고 이 문서 4 · 9절에 적는다.
-- 주문 id = 포트원 `paymentId`. 주문번호 표기 = `YYYYMMDD(KST 결제일)-paymentId 앞 8자리 대문자`(`orderNumber`).
-- 결제 결과 페이지(`/orders/[id]`)는 원장을 **읽기만** 한다. 새로고침 · 뒤로 가기로 결제가 다시 일어나지 않는다.
-- 결제 완료 페이지(`/products/[id]/complete`)는 GET에서 원장을 쓰지 않는다. 기록은 클라이언트가 POST `/api/payments/complete`를 호출할 때만 한다.
-- 금액 표기는 `formatPrice`, 결제수단 표기는 `paymentMethodLabel`(카드명 · 일시불/n개월 할부, 간편결제명)을 쓴다.
+| type | 처리 | 상태 |
+|---|---|---|
+| `Transaction.Paid` | `syncPaidPayment` → 4절 | 구현 |
+| `Transaction.CancelPending` | `CANCEL_REQUESTED` 행 | 미구현(무시) |
+| `Transaction.Cancelled` | `CANCELLED` 행 | 미구현(무시) |
+| `Transaction.PartialCancelled` | 미지원 — `console.error` 후 200, 수동 처리 | 미구현(무시) |
 
-## 12. 로그 · 개인정보
+### 11-1. 결제 취소 웹훅 (추후 구현 시 지킬 규칙)
 
-- 로그에는 `paymentId`와 오류 메시지만 남긴다. 카드 정보 · 구매자 정보 · API Secret · 포트원 응답 원문을 로그에 남기지 않는다.
-- 결제 관련 서버 로그는 `[payment]` 접두사로 시작한다.
+- 원장에 `PAID`가 없으면 무시(200) — 검증 실패로 자동 환불된 미기록 결제다.
+- 결제 조회 응답의 `status`로 판단한다: `CANCELLED` → `CANCELLED` 행, 취소 요청 진행 중 → `CANCEL_REQUESTED` 행. 응답과 웹훅 type이 다르면 조회 응답을 따른다.
+- 이미 `CANCELLED`가 있으면 성공(200). `CANCEL_REQUESTED` 없이 `CANCELLED`만 기록해도 된다. 부분 취소(금액 ≠ PAID)는 기록하지 않고 `console.error`.
+- 금액 = `−PAID.amount`, `user_id` = 원장 PAID 행 값. `record_payment_cancel`로 기록하고 스냅샷은 조회 응답 + 현재 상품(비공개면 PAID 스냅샷 상품).
+- 고객 취소(10절)와 같은 기록 함수를 공유한다. 콘솔 운영자 취소도 이 경로로 원장에 반영된다.
+
+## 12. 화면 · 응답
+
+- 실패 응답: `OrderErrorBody { code?, message, product? }` (`src/lib/products.ts`). 새 실패 코드는 이 문서 4 · 10절에 적는다.
+- 주문 id = `paymentId`. 주문번호 = `YYYYMMDD(KST 결제일)-paymentId 앞 8자리 대문자`(`orderNumber`). 금액 `formatPrice` · 결제 수단 `paymentMethodLabel`.
+- `/orders/[id]` · `/products/[id]/complete` GET은 원장을 쓰지 않는다. 새로고침 · 뒤로 가기로 결제가 다시 일어나지 않는다.
 
 ## 13. 변경 체크리스트
 
-결제 관련 코드를 바꿀 때 모두 확인한다.
-
-- [ ] 금액 · 상품명 · 사용자 id를 서버에서 정하는가 (클라이언트 값 미사용)
-- [ ] 포트원 결제 조회 API로 검증하는가 (브라우저 결과 · 웹훅 본문 미신뢰)
-- [ ] 원장에 INSERT만 하고, `record_payment_*` 함수로만 기록하는가
-- [ ] 원장 행마다 스냅샷이 같은 트랜잭션으로 생기는가
-- [ ] 같은 요청이 반복돼도 결과가 같은가 (멱등)
-- [ ] 비공개 상품 · 판매 종료 · 정원 · 중복 결제를 막는가
-- [ ] 비밀값이 클라이언트 번들 · 응답 · 로그에 없는가 (`NEXT_PUBLIC_` 금지)
-- [ ] 새 환경변수를 `.env.example`에 추가했는가
-- [ ] DB 변경은 Supabase 마이그레이션으로 하고, 적용 후 `get_advisors(security)`를 확인했는가
-- [ ] 스토리(`productFixtures.ts` 등)와 테스트를 갱신했는가
-- [ ] 이 문서가 바뀐 동작을 설명하는가
+- [ ] 금액 · 상품명 · 사용자 id를 서버가 정하고, 결제 조회 API로 검증하는가 (브라우저 결과 · 웹훅 본문 미신뢰)
+- [ ] 원장 INSERT만, `record_payment_*`로만, 스냅샷 같은 트랜잭션, 부호(+결제 · −취소)를 지키는가
+- [ ] 반복 요청 · 웹훅 재전송에도 결과가 같은가 (멱등) · 중복 결제 · 비공개 · 판매 종료 · 정원을 막는가
+- [ ] 비밀값이 번들 · 응답 · 로그에 없는가 · 새 환경변수를 `.env.example`에 추가했는가
+- [ ] DB 변경은 마이그레이션 + `get_advisors(security)` 확인 · 스토리 · 테스트 · 이 문서를 갱신했는가

@@ -133,13 +133,12 @@ paths:
 | `record_payment_paid` · `record_payment_cancel` | 불가 | 불가 | 실행 |
 
 - 원장 조회는 세션 클라이언트(`server.ts`, RLS). 기록은 `createAdminClient().rpc("record_payment_*")`로만, 테이블 직접 insert 금지.
-- 예외: 웹훅은 세션이 없으므로 **기록 여부 확인**(`transaction_key` · `type`)만 service role로 한다. 상품은 anon으로 읽는다.
+- 예외: 웹훅은 세션이 없으므로 `transaction_key`로 원장 행(`type` · `amount` · `user_id` · `product_id` · PAID `snapshot_product`)만 service role로 읽는다(`fetchLedger`). 상품은 anon으로 읽는다.
 - service role로 원장 외 데이터를 읽거나 쓰지 않는다.
 
 ## 9. 상품 · 판매 · 정원
 
-- 판매 대상 = `product.status = 'Public'`. 비공개는 모든 경로에서 "없는 상품".
-- 판매 상태: `event_at` 이후 `ended` → 정원 도달 `closed` → `on_sale`.
+- 판매 대상 = `product.status = 'Public'`. 비공개는 모든 경로에서 "없는 상품". 판매 상태: `event_at` 이후 `ended` → 정원 도달 `closed` → `on_sale`.
 - 참여 인원 = 취소 행이 없는 `PAID` 건수(`product_seat_counts`).
 - 가격 변경은 기존 결제에 영향 없음(스냅샷). 결제창이 열린 사이 바뀌면 금액 불일치로 자동 환불.
 
@@ -151,15 +150,14 @@ paths:
   - `SUCCEEDED` → `CANCELLED` · `REQUESTED` → `CANCEL_REQUESTED`(완료는 웹훅이 반영)
   - `PAYMENT_ALREADY_CANCELLED` → `CANCELLED`로 동기화 · 그 외 실패 → 기록 없이 오류
 - **포트원 취소가 먼저, 원장 기록이 나중.** 기록 실패 시 `console.error("[payment] 취소 원장 기록 실패 …")`, 재요청 시 `PAYMENT_ALREADY_CANCELLED` 경로로 복구.
-- 운영자 취소는 `requester: "ADMIN"`. 원장에 있는 결제면 같은 방식으로 기록한다.
+- 운영자 취소(포트원 콘솔)는 취소 웹훅이 원장에 반영한다(11-1).
+- 기록은 고객 취소 · 취소 웹훅 공용 `recordCancel` → `record_payment_cancel`. 함수가 PAID 행을 잠그고 `ALREADY_RECORDED`를 판정하므로 고객 취소와 웹훅이 동시에 와도 1행만 기록된다.
 
 ## 11. 웹훅 `POST /api/payments/webhook`
 
-- 콘솔: 결제 연동 › 연동 관리 › 결제알림(Webhook) 관리 › 결제모듈 V2 · 버전 `2024-04-25` · `application/json`. 테스트 · 실연동 URL · 시크릿은 각각 설정한다.
-- proxy 로그인 검사 제외(`src/lib/supabase/proxy.ts`의 `PUBLIC`).
+- 콘솔: 결제 연동 › 연동 관리 › 결제알림(Webhook) 관리 › 결제모듈 V2 · 버전 `2024-04-25` · `application/json`. 테스트 · 실연동 URL · 시크릿은 각각 설정한다. proxy 로그인 검사 제외(`PUBLIC`).
 - **원문 body(text)** + 헤더로 `verifyPortoneWebhook` (`Webhook.verify`) 서명 검증. JSON 파싱 후 검증 금지.
-- 본문의 금액 · 상태를 믿지 않는다. `data.paymentId`로 결제 조회 API를 다시 호출해 판단한다.
-- 판정 · 기록은 complete · cancel과 **같은 함수**를 쓴다. 웹훅 전용 판정 로직을 만들지 않는다.
+- 본문의 금액 · 상태를 믿지 않는다. `data.paymentId`로 결제 조회 API를 다시 호출해 판단한다. 판정 · 기록은 complete · cancel과 **같은 함수**를 쓴다. 웹훅 전용 판정 로직을 만들지 않는다.
 - 같은 웹훅이 여러 번 와도 결과가 같다(`ALREADY_RECORDED` · unique 키). 포트원은 실패 시 최대 5회 재전송한다.
 
 | 응답 | 경우 |
@@ -171,22 +169,26 @@ paths:
 | type | 처리 | 상태 |
 |---|---|---|
 | `Transaction.Paid` | `syncPaidPayment` → 4절 | 구현 |
-| `Transaction.CancelPending` | `CANCEL_REQUESTED` 행 | 미구현(무시) |
-| `Transaction.Cancelled` | `CANCELLED` 행 | 미구현(무시) |
-| `Transaction.PartialCancelled` | 미지원 — `console.error` 후 200, 수동 처리 | 미구현(무시) |
+| `Transaction.CancelPending` · `Transaction.Cancelled` · `Transaction.PartialCancelled` | `syncCancelledPayment` → 11-1 | 구현 |
 
-### 11-1. 결제 취소 웹훅 (추후 구현 시 지킬 규칙)
+### 11-1. 결제 취소 웹훅 (`syncCancelledPayment`)
 
-- 원장에 `PAID`가 없으면 무시(200) — 검증 실패로 자동 환불된 미기록 결제다.
-- 결제 조회 응답의 `status`로 판단한다: `CANCELLED` → `CANCELLED` 행, 취소 요청 진행 중 → `CANCEL_REQUESTED` 행. 응답과 웹훅 type이 다르면 조회 응답을 따른다.
-- 이미 `CANCELLED`가 있으면 성공(200). `CANCEL_REQUESTED` 없이 `CANCELLED`만 기록해도 된다. 부분 취소(금액 ≠ PAID)는 기록하지 않고 `console.error`.
-- 금액 = `−PAID.amount`, `user_id` = 원장 PAID 행 값. `record_payment_cancel`로 기록하고 스냅샷은 조회 응답 + 현재 상품(비공개면 PAID 스냅샷 상품).
-- 고객 취소(10절)와 같은 기록 함수를 공유한다. 콘솔 운영자 취소도 이 경로로 원장에 반영된다.
+1. 원장(`fetchLedger`)에 `PAID`가 없으면 무시(200) — 검증 실패로 자동 환불된 미기록 결제다. 이미 `CANCELLED`가 있으면 성공(200).
+2. 결제 조회 → 없거나 남의 상점이면 무시(200). **웹훅 type이 아니라 조회 응답으로 판단한다.**
+
+| 조회 응답 | 원장 |
+|---|---|
+| `status = CANCELLED` · `amount.cancelled = PAID 금액` | `CANCELLED` 행 (`CANCEL_REQUESTED` 없이 바로 기록해도 된다) |
+| `status = PAID` · `cancellations`에 `REQUESTED`(금액 = PAID 금액) | `CANCEL_REQUESTED` 행 |
+| `PARTIAL_CANCELLED` · 금액 불일치 | 기록 안 함, `console.error("[payment] 부분 취소 …")` → 포트원 콘솔 수동 처리 · 200 |
+| 그 외 (취소 흔적 없음) | 무시(200) |
+
+- 금액 = `−PAID.amount`, `user_id` · `product_id` = 원장 PAID 행 값(customData 미사용). 스냅샷 = 조회 응답 + 현재 상품(비공개면 PAID 스냅샷 상품).
 
 ## 12. 화면 · 응답
 
-- 실패 응답: `OrderErrorBody { code?, message, product? }` (`src/lib/products.ts`). 새 실패 코드는 이 문서 4 · 10절에 적는다.
-- 주문 id = `paymentId`. 주문번호 = `YYYYMMDD(KST 결제일)-paymentId 앞 8자리 대문자`(`orderNumber`). 금액 `formatPrice` · 결제 수단 `paymentMethodLabel`.
+- 실패 응답: `OrderErrorBody { code?, message, product? }` (`src/lib/products.ts`). 새 실패 코드는 이 문서에 적는다. 주문 id = `paymentId`. 주문번호 = `YYYYMMDD(KST 결제일)-paymentId 앞 8자리 대문자`(`orderNumber`). 금액 `formatPrice` · 결제 수단 `paymentMethodLabel`.
+- 취소 내역(`listCancellations`)은 취소 행이 있는 결제, 최신 취소순. 취소일 = 취소 행 스냅샷의 `cancellations[].requestedAt`, 환불 완료일 = `CANCELLED` 스냅샷의 `cancelledAt` (없으면 원장 `created_at`). 웹훅이 늦게 와도 실제 시각이 보인다.
 - `/orders/[id]` · `/products/[id]/complete` GET은 원장을 쓰지 않는다. 새로고침 · 뒤로 가기로 결제가 다시 일어나지 않는다.
 
 ## 13. 변경 체크리스트

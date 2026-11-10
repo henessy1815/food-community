@@ -164,6 +164,20 @@ function paidAtOf(paid: PaymentRow) {
   return (snapshot && "paidAt" in snapshot && snapshot.paidAt) || paid.created_at;
 }
 
+/** 취소 요청 시각 — 취소 행 스냅샷의 포트원 cancellations[].requestedAt (없으면 원장 기록 시각) */
+function cancelRequestedAtOf(row: PaymentRow) {
+  const snapshot = row.payment_snapshot?.snapshot_payment;
+  const cancellations = (snapshot && "cancellations" in snapshot && snapshot.cancellations) || [];
+  const found = cancellations.find((c) => "requestedAt" in c && c.status !== "FAILED");
+  return (found && "requestedAt" in found && found.requestedAt) || row.created_at;
+}
+
+/** 환불 완료 시각 — CANCELLED 행 스냅샷의 포트원 cancelledAt (웹훅이 늦게 와도 실제 시각) */
+function refundedAtOf(row: PaymentRow) {
+  const snapshot = row.payment_snapshot?.snapshot_payment;
+  return (snapshot && "cancelledAt" in snapshot && snapshot.cancelledAt) || row.created_at;
+}
+
 function toProduct(
   row: ProductRow,
   now: number,
@@ -210,8 +224,8 @@ function toOrder(key: string, events: PaymentRow[], now: number, seatsById: Map<
     method: paymentMethodLabel(snapshot.snapshot_payment),
     status,
     paidAt,
-    canceledAt: (requested ?? cancelled)?.created_at,
-    refundedAt: cancelled?.created_at,
+    canceledAt: requested ? cancelRequestedAtOf(requested) : cancelled ? cancelRequestedAtOf(cancelled) : undefined,
+    refundedAt: cancelled ? refundedAtOf(cancelled) : undefined,
     attended: now >= Date.parse(product.endsAt ?? product.startsAt),
     cancelable: status === "paid" && now <= Date.parse(product.refundDeadline) && now < Date.parse(product.startsAt),
   };
@@ -395,7 +409,8 @@ export async function syncPaidPayment(paymentId: string): Promise<Result<{ order
   await connection();
 
   // 이미 기록된 결제는 다시 검증하지 않는다 — 기록 후 가격 변경 · 행사 시작으로 정상 결제가 환불되지 않게
-  if (await isPaidRecorded(paymentId)) return { ok: true, value: { orderId: paymentId } };
+  const ledger = await fetchLedger(paymentId);
+  if (ledger.some((row) => row.type === "PAID")) return { ok: true, value: { orderId: paymentId } };
 
   const payment = await getPortonePayment(paymentId);
   if (!payment) return fail(404, { message: "결제 내역을 찾을 수 없어요." });
@@ -413,16 +428,22 @@ function isOwnStore(payment: PortonePayment) {
   return !("storeId" in payment) || payment.storeId === getPortoneConfig().storeId;
 }
 
-/** 원장에 PAID 행이 있는지 — 웹훅 전용 (세션이 없어 service role로 type만 확인) */
-async function isPaidRecorded(paymentId: string) {
+interface LedgerRow {
+  type: PaymentType;
+  amount: number | string;
+  user_id: string;
+  product_id: string;
+  payment_snapshot: { snapshot_product: ProductRow } | null;
+}
+
+/** 결제 1건의 원장 행 — 웹훅 전용 (세션이 없어 service role로 필요한 컬럼만 읽는다 · 규칙 8절 예외) */
+async function fetchLedger(paymentId: string): Promise<LedgerRow[]> {
   const { data, error } = await createAdminClient()
     .from("payment")
-    .select("type")
-    .eq("transaction_key", paymentId)
-    .eq("type", "PAID")
-    .limit(1);
-  if (error) throw new Error(`결제 기록 여부를 확인하지 못했어요: ${error.message}`);
-  return data.length > 0;
+    .select("type, amount, user_id, product_id, payment_snapshot(snapshot_product)")
+    .eq("transaction_key", paymentId);
+  if (error) throw new Error(`결제 원장을 불러오지 못했어요: ${error.message}`);
+  return data as unknown as LedgerRow[];
 }
 
 /**
@@ -541,24 +562,101 @@ export async function cancelPayment(userId: string, paymentId: string): Promise<
 
   // 취소 이후 상태를 다시 조회해 스냅샷으로 남긴다 (취소 내역 cancellations 포함)
   const latest = await getPortonePayment(paymentId);
-  const type: PaymentType = result.ok && result.status === "REQUESTED" ? "CANCEL_REQUESTED" : "CANCELLED";
-  const currentProduct = await fetchProductRow(supabase, order.product.id);
+  const type: CancelType = result.ok && result.status === "REQUESTED" ? "CANCEL_REQUESTED" : "CANCELLED";
   const paidSnapshot = events.find((e) => e.type === "PAID")!.payment_snapshot!;
 
-  const { error } = await createAdminClient().rpc("record_payment_cancel", {
-    p_transaction_key: paymentId,
-    p_user_id: userId,
-    p_type: type,
-    // 원장 부호: 취소 행은 − (전액 취소 = −PAID 금액)
-    p_amount: -order.amount,
-    p_snapshot_payment: latest ?? paidSnapshot.snapshot_payment,
-    p_snapshot_product: currentProduct ?? paidSnapshot.snapshot_product,
+  const recorded = await recordCancel(supabase, paymentId, type, latest ?? paidSnapshot.snapshot_payment, {
+    userId,
+    productId: order.product.id,
+    amount: order.amount,
+    snapshotProduct: paidSnapshot.snapshot_product,
   });
-  if (error) {
-    console.error(`[payment] 취소 원장 기록 실패 — 포트원은 취소됨 paymentId=${paymentId}`, error.message);
+  if (!recorded.ok) {
+    console.error(`[payment] 취소 원장 기록 실패 — 포트원은 취소됨 paymentId=${paymentId}`, recorded.message);
     return fail(500, { message: "취소는 접수됐지만 내역 반영이 늦어지고 있어요. 잠시 후 확인해주세요." });
   }
 
   const [updated] = await toOrders(supabase, await fetchMyPayments(supabase, userId, paymentId), Date.now());
   return { ok: true, value: updated ?? order };
+}
+
+type CancelType = Extract<PaymentType, "CANCEL_REQUESTED" | "CANCELLED">;
+
+/**
+ * 취소 원장 기록 — 고객 취소 · 취소 웹훅 공용. 금액은 −PAID 금액(전액 취소), 스냅샷 상품은 현재 상품(비공개면 PAID 스냅샷 상품).
+ * record_payment_cancel이 PAID 행을 잠그고 ALREADY_RECORDED를 판정하므로 동시에 와도 1행만 기록된다.
+ */
+async function recordCancel(
+  supabase: Supabase,
+  paymentId: string,
+  type: CancelType,
+  snapshotPayment: PortonePayment,
+  paid: { userId: string; productId: string; amount: number; snapshotProduct: ProductRow },
+): Promise<{ ok: true; outcome: string } | { ok: false; message: string }> {
+  const currentProduct = await fetchProductRow(supabase, paid.productId);
+  const { data, error } = await createAdminClient().rpc("record_payment_cancel", {
+    p_transaction_key: paymentId,
+    p_user_id: paid.userId,
+    p_type: type,
+    // 원장 부호: 취소 행은 − (전액 취소 = −PAID 금액)
+    p_amount: -paid.amount,
+    p_snapshot_payment: snapshotPayment,
+    p_snapshot_product: currentProduct ?? paid.snapshotProduct,
+  });
+  if (error) return { ok: false, message: error.message };
+  if (data === "NOT_FOUND") return { ok: false, message: "원장에 PAID 행이 없어요." };
+  return { ok: true, outcome: data as string };
+}
+
+/** 포트원 결제 조회 응답 → 원장 취소 타입. 부분 취소(금액 불일치)는 PARTIAL, 취소 흔적이 없으면 null */
+function cancelTypeOf(payment: PortonePayment, paidAmount: number): CancelType | "PARTIAL" | null {
+  if (payment.status === "CANCELLED") return payment.amount.cancelled === paidAmount ? "CANCELLED" : "PARTIAL";
+  if (payment.status === "PARTIAL_CANCELLED") return "PARTIAL";
+  if (payment.status === "PAID") {
+    const requested = payment.cancellations?.find((c) => c.status === "REQUESTED");
+    if (!requested) return null;
+    return "totalAmount" in requested && requested.totalAmount === paidAmount ? "CANCEL_REQUESTED" : "PARTIAL";
+  }
+  return null;
+}
+
+/**
+ * 결제 취소 동기화 (웹훅 Transaction.CancelPending · Cancelled · PartialCancelled) — 규칙: .claude/rules/payment.md 11-1절
+ * 콘솔 운영자 취소 · PG 비동기 취소 완료를 원장에 반영한다. 웹훅 type이 아니라 결제 조회 응답으로 판단한다.
+ */
+export async function syncCancelledPayment(paymentId: string): Promise<Result<{ orderId: string }>> {
+  if (!UUID.test(paymentId)) return fail(400, { message: "결제 정보가 올바르지 않아요." });
+  await connection();
+
+  const ledger = await fetchLedger(paymentId);
+  const paid = ledger.find((row) => row.type === "PAID");
+  // 원장에 없는 결제 — 검증 실패로 자동 환불된 미기록 결제
+  if (!paid?.payment_snapshot) return fail(404, { message: "원장에 없는 결제예요." });
+  if (ledger.some((row) => row.type === "CANCELLED")) return { ok: true, value: { orderId: paymentId } };
+
+  const payment = await getPortonePayment(paymentId);
+  if (!payment) return fail(404, { message: "결제 내역을 찾을 수 없어요." });
+  if (!isOwnStore(payment)) return fail(403, { message: "이 상점의 결제가 아니에요." });
+
+  const paidAmount = Number(paid.amount);
+  const type = cancelTypeOf(payment, paidAmount);
+  if (type === "PARTIAL") {
+    console.error(`[payment] 부분 취소 — 원장 미반영, 포트원 콘솔 확인 필요 paymentId=${paymentId}`);
+    return fail(409, { message: "부분 취소는 지원하지 않아요." });
+  }
+  if (!type) return fail(409, { message: "취소된 결제가 아니에요." });
+
+  // 세션 없는 요청 — createClient()는 anon으로 동작한다 (공개 상품만 조회)
+  const supabase = await createClient();
+  const recorded = await recordCancel(supabase, paymentId, type, payment, {
+    userId: paid.user_id,
+    productId: paid.product_id,
+    amount: paidAmount,
+    snapshotProduct: paid.payment_snapshot.snapshot_product,
+  });
+  if (!recorded.ok) {
+    console.error(`[payment] 취소 원장 기록 실패 paymentId=${paymentId}`, recorded.message);
+    return fail(500, { message: "취소 내역을 기록하지 못했어요." });
+  }
+  return { ok: true, value: { orderId: paymentId } };
 }

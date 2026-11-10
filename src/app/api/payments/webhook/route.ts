@@ -1,5 +1,5 @@
 import { verifyPortoneWebhook } from "@/lib/portone";
-import { syncPaidPayment } from "@/lib/shop";
+import { syncCancelledPayment, syncPaidPayment } from "@/lib/shop";
 
 /**
  * POST /api/payments/webhook — 포트원 V2 웹훅 (2024-04-25 · application/json). 규칙: .claude/rules/payment.md 10절
@@ -22,12 +22,20 @@ export async function POST(request: Request) {
     return new Response(null, { status: 400 });
   }
 
-  // 결제 취소(Transaction.Cancelled · CancelPending)는 아직 처리하지 않는다 — 알지 못하는 type과 함께 무시
-  if (webhook.type !== "Transaction.Paid" || !("data" in webhook)) return new Response(null, { status: 200 });
+  // 결제 완료 → syncPaidPayment · 취소 요청/완료/부분 취소 → syncCancelledPayment · 그 외(모르는 type 포함) 무시
+  const sync =
+    webhook.type === "Transaction.Paid"
+      ? syncPaidPayment
+      : webhook.type === "Transaction.CancelPending" ||
+          webhook.type === "Transaction.Cancelled" ||
+          webhook.type === "Transaction.PartialCancelled"
+        ? syncCancelledPayment
+        : null;
+  if (!sync || !("data" in webhook) || !("paymentId" in webhook.data)) return new Response(null, { status: 200 });
 
   const { paymentId } = webhook.data;
   try {
-    const result = await syncPaidPayment(paymentId);
+    const result = await sync(paymentId);
     if (result.ok) return new Response(null, { status: 200 });
     if (result.status >= 500) return new Response(null, { status: 503 });
     // 처리 대상이 아니거나 검증 실패(자동 환불 완료) — 재시도해도 결과가 같으므로 200
